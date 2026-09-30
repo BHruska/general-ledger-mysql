@@ -1,0 +1,202 @@
+<!--
+General Ledger v0.2.0
+File: templates/journal_entries.html
+Description: Journal -> Entries. Every entry in a date range with all its lines. Edit
+             is reverse-and-repost; Reverse posts a negating entry; only the memo of a
+             posted entry changes in place.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'journal' %}
+{% set active_sub = 'entries' %}
+
+{% block page_title %}Journal Entries{% endblock %}
+{% block page_subtitle %}Every posted entry, with its lines. Posted entries are corrected by reversal.{% endblock %}
+
+{% block styles %}
+<style>
+    tr.entry-row td { background: var(--surface-muted); border-top: 2px solid var(--border); }
+    tr.entry-row.reversed td { color: var(--text-faint); }
+    tr.line-row td:first-child { padding-left: 24px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="startDate">From</label>
+            <input type="date" id="startDate">
+        </div>
+        <div class="form-group">
+            <label for="endDate">To</label>
+            <input type="date" id="endDate">
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn" id="loadBtn" onclick="loadEntries()">Load</button>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2>Entries</h2>
+        <div class="section-actions">
+            <span class="status-line" id="entriesStatus"></span>
+            <a class="btn success" href="/journal/new">+ New entry</a>
+        </div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr>
+                <th>Date</th><th>Entry</th><th>Account</th><th>Memo</th>
+                <th class="num">Debit</th><th class="num">Credit</th><th></th>
+            </tr></thead>
+            <tbody id="entriesBody">
+                <tr><td colspan="7" class="empty">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div class="modal-overlay" id="memoModal">
+    <div class="modal">
+        <h3 id="memoTitle">Edit memo</h3>
+        <p class="note">The memo is the one part of a posted entry that changes in place. The
+            change is recorded in the audit log.</p>
+        <div class="form-group">
+            <label for="memoInput">Memo</label>
+            <input type="text" id="memoInput" maxlength="255">
+        </div>
+        <div class="alert alert-error" id="memoError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('memoModal')">Cancel</button>
+            <button class="btn" id="memoSaveBtn" onclick="saveMemo()">Save memo</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const SOURCE_CHIP = { MANUAL: '', REVERSAL: 'warning', BANK: 'info', OPENING: 'info',
+                          INVOICE: 'info', PAYMENT: 'info', IMPORT: '' };
+    let entries = [];
+    let memoEntryId = null;
+
+    function money(v) { return v === null ? '' : formatMoney(v); }
+
+    async function loadEntries() {
+        const body = document.getElementById('entriesBody');
+        const status = document.getElementById('entriesStatus');
+        const done = setBusy(document.getElementById('loadBtn'), 'Loading...');
+        status.textContent = 'Loading...';
+        try {
+            const params = new URLSearchParams();
+            const start = document.getElementById('startDate').value;
+            const end = document.getElementById('endDate').value;
+            if (start) params.set('start', start);
+            if (end) params.set('end', end);
+            const data = await api('/api/journal/entries?' + params);
+            document.getElementById('startDate').value = data.start;
+            document.getElementById('endDate').value = data.end;
+            entries = data.entries;
+            render();
+            status.textContent = `${entries.length} entries · updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 7, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    function render() {
+        const body = document.getElementById('entriesBody');
+        if (!entries.length) {
+            tableMessage(body, 7, 'No entries in this range. Post one with + New entry.');
+            return;
+        }
+        body.innerHTML = entries.map((e) => {
+            const reversed = e.reversed_by_entry_id !== null;
+            const chips = [
+                `<span class="chip ${SOURCE_CHIP[e.source] ?? ''}">${escapeHtml(e.source)}</span>`,
+                reversed ? `<span class="chip">REVERSED BY #${e.reversed_by_entry_id}</span>` : '',
+                e.reverses_entry_id !== null ? `<span class="chip">REVERSES #${e.reverses_entry_id}</span>` : '',
+            ].join(' ');
+            const actions = [
+                e.editable ? `<a class="btn small secondary" href="/journal/new?edit=${e.id}">Edit</a>` : '',
+                e.reversible ? `<button class="btn small secondary" onclick="reverseEntry(${e.id})">Reverse</button>` : '',
+                `<button class="btn small secondary" onclick="openMemo(${e.id})">Memo</button>`,
+            ].join(' ');
+            const head = `<tr class="entry-row${reversed ? ' reversed' : ''}">
+                <td>${escapeHtml(e.entry_date)}</td>
+                <td><strong>#${e.id}</strong></td>
+                <td>${chips}</td>
+                <td>${escapeHtml(e.memo ?? '')}</td>
+                <td></td><td></td>
+                <td>${actions}</td>
+            </tr>`;
+            const lines = e.lines.map((l) => `<tr class="line-row">
+                <td></td><td></td>
+                <td>${escapeHtml(l.account_number)} ${escapeHtml(l.account_name)}</td>
+                <td>${escapeHtml(l.memo ?? '')}</td>
+                <td class="num">${money(l.debit)}</td>
+                <td class="num">${money(l.credit)}</td>
+                <td></td>
+            </tr>`).join('');
+            return head + lines;
+        }).join('');
+    }
+
+    async function reverseEntry(id) {
+        const entry = entries.find((e) => e.id === id);
+        if (!confirm(`Reverse entry #${id}? This posts a new entry, dated ${entry.entry_date}, `
+                     + 'that negates every line. The original stays in the journal.')) return;
+        try {
+            const data = await api(`/api/journal/entries/${id}/reverse`, { method: 'POST', body: {} });
+            showSuccess(`Posted reversal #${data.entry.id}.`);
+            loadEntries();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    function openMemo(id) {
+        memoEntryId = id;
+        const entry = entries.find((e) => e.id === id);
+        document.getElementById('memoTitle').textContent = `Edit memo of entry #${id}`;
+        document.getElementById('memoInput').value = entry.memo ?? '';
+        document.getElementById('memoError').hidden = true;
+        openModal('memoModal');
+    }
+
+    async function saveMemo() {
+        const errorEl = document.getElementById('memoError');
+        const done = setBusy(document.getElementById('memoSaveBtn'), 'Saving...');
+        try {
+            await api(`/api/journal/entries/${memoEntryId}/memo`, {
+                method: 'PATCH', body: { memo: document.getElementById('memoInput').value },
+            });
+            closeModal('memoModal');
+            showSuccess(`Memo of entry #${memoEntryId} saved.`);
+            loadEntries();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        const posted = new URLSearchParams(window.location.search).get('posted');
+        if (posted) showSuccess(`Posted entry #${posted}.`);
+        loadEntries();
+    });
+</script>
+{% endblock %}
+
+<!-- EOF - journal_entries.html -->

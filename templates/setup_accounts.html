@@ -1,0 +1,233 @@
+<!--
+General Ledger v0.2.0
+File: templates/setup_accounts.html
+Description: Setup -> Accounts. The chart of accounts: add, edit, deactivate, and delete
+             an account nothing has posted to. The server enforces every rule.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'setup' %}
+{% set active_sub = 'accounts' %}
+
+{% block page_title %}Chart of Accounts{% endblock %}
+{% block page_subtitle %}Account numbers are the sort order of every report.{% endblock %}
+
+{% block styles %}
+<style>
+    tr.sub-acct td:nth-child(2) { padding-left: 24px; }
+    tr.inactive td { color: var(--text-faint); }
+    .check-row { display: flex; gap: 20px; margin-bottom: 15px; }
+    .check-row label { display: flex; align-items: center; gap: 6px; font-weight: normal; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2>Accounts</h2>
+        <div class="section-actions">
+            <span class="status-line" id="accountsStatus"></span>
+            <label class="toggle-label"><input type="checkbox" id="showInactive" onchange="render()"> Show inactive</label>
+            <button class="btn success" onclick="openAccount(null)">+ Add account</button>
+        </div>
+    </div>
+    <div class="info-box">
+        A parent with sub-accounts is a <strong>header</strong>: it rolls up in reports and takes no
+        postings. Sub-accounts go one level deep. An account with postings can be deactivated but
+        never deleted. Tax lines are filled in once the entity type is settled.
+    </div>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr>
+                <th>Number</th><th>Name</th><th>Type</th><th>Tax line</th><th></th><th></th>
+            </tr></thead>
+            <tbody id="accountsBody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div class="modal-overlay" id="accountModal">
+    <div class="modal">
+        <h3 id="accountModalTitle">Add account</h3>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="acctNumber">Number</label>
+                <input type="text" id="acctNumber" inputmode="numeric" maxlength="10">
+                <small>Assets 1000s, liabilities 2000s, equity 3000s, income 4000s, expenses 5000-7999</small>
+            </div>
+            <div class="form-group">
+                <label for="acctType">Type</label>
+                <select id="acctType" onchange="fillParents()">
+                    <option value="ASSET">Asset</option><option value="LIABILITY">Liability</option>
+                    <option value="EQUITY">Equity</option><option value="INCOME">Income</option>
+                    <option value="EXPENSE" selected>Expense</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="acctName">Name</label>
+            <input type="text" id="acctName" maxlength="100">
+        </div>
+        <div class="form-group">
+            <label for="acctParent">Parent (optional)</label>
+            <select id="acctParent"></select>
+            <small>Only top-level accounts of the same type with no postings can be parents.</small>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="acctTaxLine">Tax line</label>
+                <input type="text" id="acctTaxLine" maxlength="60" placeholder="e.g. SCH_C_18_OFFICE">
+            </div>
+            <div class="form-group">
+                <label for="acctDescription">Description</label>
+                <input type="text" id="acctDescription" maxlength="255">
+            </div>
+        </div>
+        <div class="check-row">
+            <label><input type="checkbox" id="acctBank"> Bank or card account (a feed posts to it)</label>
+            <label><input type="checkbox" id="acct1099"> 1099 expense</label>
+        </div>
+        <div class="alert alert-error" id="accountError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('accountModal')">Cancel</button>
+            <button class="btn success" id="accountSaveBtn" onclick="saveAccount()">Save</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let accounts = [];
+    let editingId = null;
+
+    async function loadAccounts() {
+        const status = document.getElementById('accountsStatus');
+        try {
+            accounts = (await api('/api/accounts')).accounts;
+            render();
+            status.textContent = `${accounts.length} accounts`;
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+            const body = document.getElementById('accountsBody');
+            if (body.querySelector('td.empty')) tableMessage(body, 6, e.message, true);
+        }
+    }
+
+    function render() {
+        const showInactive = document.getElementById('showInactive').checked;
+        const rows = accounts.filter((a) => showInactive || a.is_active).map((a) => {
+            const chips = [
+                a.is_header ? '<span class="chip">HEADER</span>' : '',
+                a.is_bank_account ? '<span class="chip info">BANK</span>' : '',
+                a.is_1099_expense ? '<span class="chip">1099</span>' : '',
+                a.protected ? `<span class="chip info">${escapeHtml(a.protected.toUpperCase())}</span>` : '',
+                a.is_active ? '' : '<span class="chip warning">INACTIVE</span>',
+            ].join(' ');
+            const actions = [
+                `<button class="btn small secondary" onclick="openAccount(${a.id})">Edit</button>`,
+                a.protected ? '' : `<button class="btn small secondary" onclick="setActive(${a.id}, ${!a.is_active})">${a.is_active ? 'Deactivate' : 'Activate'}</button>`,
+                a.deletable ? `<button class="btn small danger" onclick="deleteAccount(${a.id})">Delete</button>` : '',
+            ].join(' ');
+            const cls = [a.parent_id !== null ? 'sub-acct' : '', a.is_active ? '' : 'inactive'].join(' ');
+            return `<tr class="${cls}">
+                <td><strong>${escapeHtml(a.number)}</strong></td>
+                <td>${a.is_header ? escapeHtml(a.name) : `<a href="/journal/registers?account=${a.id}">${escapeHtml(a.name)}</a>`}</td>
+                <td>${escapeHtml(a.type)}</td>
+                <td>${a.tax_line === null ? '—' : escapeHtml(a.tax_line)}</td>
+                <td>${chips}</td>
+                <td>${actions}</td>
+            </tr>`;
+        });
+        const body = document.getElementById('accountsBody');
+        if (rows.length) body.innerHTML = rows.join('');
+        else tableMessage(body, 6, 'No accounts. Add one with + Add account.');
+    }
+
+    function fillParents(selected = null) {
+        const type = document.getElementById('acctType').value;
+        const options = accounts.filter((a) =>
+            a.type === type && a.parent_id === null && a.id !== editingId && (!a.has_postings || a.id === selected));
+        document.getElementById('acctParent').innerHTML = '<option value="">None (top level)</option>' +
+            options.map((a) => `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+        document.getElementById('acctParent').value = selected === null ? '' : String(selected);
+    }
+
+    function openAccount(id) {
+        editingId = id;
+        const a = id === null ? null : accounts.find((x) => x.id === id);
+        document.getElementById('accountModalTitle').textContent = a ? `Edit ${a.number} ${a.name}` : 'Add account';
+        document.getElementById('acctNumber').value = a ? a.number : '';
+        document.getElementById('acctName').value = a ? a.name : '';
+        document.getElementById('acctType').value = a ? a.type : 'EXPENSE';
+        // The server refuses a type change once an account has postings or sub-accounts.
+        document.getElementById('acctType').disabled = !!(a && (a.has_postings || a.is_header));
+        document.getElementById('acctTaxLine').value = a && a.tax_line !== null ? a.tax_line : '';
+        document.getElementById('acctDescription').value = a && a.description !== null ? a.description : '';
+        document.getElementById('acctBank').checked = !!(a && a.is_bank_account);
+        document.getElementById('acct1099').checked = !!(a && a.is_1099_expense);
+        document.getElementById('accountError').hidden = true;
+        fillParents(a ? a.parent_id : null);
+        openModal('accountModal');
+    }
+
+    async function saveAccount() {
+        const errorEl = document.getElementById('accountError');
+        const done = setBusy(document.getElementById('accountSaveBtn'), 'Saving...');
+        const payload = {
+            number: document.getElementById('acctNumber').value,
+            name: document.getElementById('acctName').value,
+            type: document.getElementById('acctType').value,
+            parent_id: document.getElementById('acctParent').value ? Number(document.getElementById('acctParent').value) : null,
+            tax_line: document.getElementById('acctTaxLine').value,
+            description: document.getElementById('acctDescription').value,
+            is_bank_account: document.getElementById('acctBank').checked,
+            is_1099_expense: document.getElementById('acct1099').checked,
+        };
+        try {
+            if (editingId === null) {
+                await api('/api/accounts', { method: 'POST', body: payload });
+            } else {
+                await api(`/api/accounts/${editingId}`, { method: 'PATCH', body: payload });
+            }
+            closeModal('accountModal');
+            showSuccess(`Saved ${payload.number} ${payload.name}.`);
+            loadAccounts();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function setActive(id, active) {
+        const a = accounts.find((x) => x.id === id);
+        if (!active && !confirm(`Deactivate ${a.number} ${a.name}? It stays in every report but can take no new postings.`)) return;
+        try {
+            await api(`/api/accounts/${id}`, { method: 'PATCH', body: { is_active: active } });
+            showSuccess(`${a.number} ${a.name} ${active ? 'activated' : 'deactivated'}.`);
+            loadAccounts();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    async function deleteAccount(id) {
+        const a = accounts.find((x) => x.id === id);
+        if (!confirm(`Delete ${a.number} ${a.name}? Nothing has posted to it.`)) return;
+        try {
+            await api(`/api/accounts/${id}`, { method: 'DELETE' });
+            showSuccess(`Deleted ${a.number} ${a.name}.`);
+            loadAccounts();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', loadAccounts);
+</script>
+{% endblock %}
+
+<!-- EOF - setup_accounts.html -->

@@ -37,8 +37,14 @@ There is **one Dockerfile and no dev variant**. Tests run against MySQL only.
 
 ## Build order (docs/DESIGN.md section 13)
 
-Phase 0 (skeleton) is done. Next: phase 1, the core ledger. Plaid is phase 4 and its
-decisions are already settled in `PLAID_PLAN.md`.
+Phases 0 (skeleton) and 1 (core ledger) are done. Next: phase 2, Chase CSV/QFX import
+and the review queue. Plaid is phase 4 and its decisions are already settled in
+`PLAID_PLAN.md`.
+
+Migration 0002 installs the DESIGN.md 3.2a triggers (plus two on `journal_entry`). On
+the server they need `log_bin_trust_function_creators=1` on the shared `db` service —
+an infra-side change to request before the first deploy. If it is declined, remove the
+TRIGGERS from that migration; nothing else depends on them.
 
 ## Architecture rules (see docs/DESIGN.md)
 
@@ -52,6 +58,12 @@ decisions are already settled in `PLAID_PLAN.md`.
   `journal_line` rows.** A posted entry is never updated or deleted; corrections are
   reversals. Only memo and attachments may change, with an `audit_log` row.
 - 🚨 **Nothing is posted on or before the lock date**, including reversals.
+- 🚨 **Amounts cross the API as strings** ("49.00"), parsed by `utils/money.py`; a JSON
+  number is refused, so no float ever reaches a figure.
+- Functions in `utils/journal.py` that take a `session` never commit; the caller owns the
+  transaction (that is what makes Edit = reverse + re-post atomic).
+- Business errors raise `LedgerError` (utils/errors.py); `routes/api.py`'s `@envelope`
+  turns them into a 400 and anything else into a logged 500.
 - **Rules and matching only suggest.** Only a human moves a bank line to POSTED or EXCLUDED.
 - Accounting dates are `DATE` (no time zone). Audit timestamps are UTC `DATETIME(6)`.
   `TZ` is for log readability only.
@@ -87,8 +99,9 @@ a change as working.
   page (utility/OAuth pages too), set once as `config.APP_TITLE_PREFIX` and applied by
   base.html. `tests/test_page_titles.py` enforces it.
 - 🚨 TOP NAV: never add a top-nav entry (NAV_ITEMS in app.py) without explicit permission.
-  Sibling pages use the `.sub-menu`; in-page panels use `.tabs`. DESIGN.md 12.1 proposes
-  six items; only Dashboard exists until the owner approves them.
+  Sibling pages use the `.sub-menu`; in-page panels use `.tabs`. The six items of
+  DESIGN.md 12.1 were approved on 2026-09-29. Sub-menus are defined once in `SUB_MENUS`
+  (app.py) and rendered by base.html; pages set `active_sub`.
 - 🚨 NO FALLBACKS: never write `value || 0` or estimate a missing backend value in the
   frontend. Missing data must look broken. Intentional absence comes from the server as
   null and renders as an em dash.

@@ -1,0 +1,207 @@
+<!--
+General Ledger v0.2.0
+File: templates/journal_new.html
+Description: Journal -> New entry (and Edit, via ?edit=<id>). A lines grid with Debit
+             and Credit columns. The server checks the entry on every change and
+             returns the totals and every problem; Save stays disabled until it
+             reports none (docs/DESIGN.md section 12.4).
+-->
+{% extends "base.html" %}
+{% set active_nav = 'journal' %}
+{% set active_sub = 'new' %}
+
+{% block page_title %}New Journal Entry{% endblock %}
+{% block page_subtitle %}Debits equal credits, or it does not post.{% endblock %}
+
+{% block styles %}
+<style>
+    #linesTable select, #linesTable input { width: 100%; }
+    #linesTable td.num input { text-align: right; }
+    #linesTable tfoot td { font-weight: 600; border-top: 2px solid var(--border); }
+    .balance-line { font-weight: 600; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="alert alert-info" id="editNote" hidden></div>
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="entryDate">Date</label>
+            <input type="date" id="entryDate" oninput="scheduleCheck()">
+        </div>
+        <div class="form-group" style="grid-column: span 2;">
+            <label for="entryMemo">Memo</label>
+            <input type="text" id="entryMemo" maxlength="255" placeholder="What this entry is for">
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2>Lines</h2>
+        <div class="section-actions">
+            <button class="btn secondary" onclick="addLine()">+ Add line</button>
+        </div>
+    </div>
+    <div class="table-wrap">
+        <table class="compact" id="linesTable">
+            <thead><tr>
+                <th style="width: 40%;">Account</th><th class="num">Debit</th><th class="num">Credit</th>
+                <th>Line memo</th><th></th>
+            </tr></thead>
+            <tbody id="linesBody">
+                <tr><td colspan="5" class="empty">Loading accounts...</td></tr>
+            </tbody>
+            <tfoot><tr>
+                <td>Totals</td>
+                <td class="num" id="totalDebits">—</td>
+                <td class="num" id="totalCredits">—</td>
+                <td colspan="2" class="balance-line" id="balanceLine"></td>
+            </tr></tfoot>
+        </table>
+    </div>
+    <div class="alert alert-warning" id="problems" hidden></div>
+    <div class="form-actions">
+        <a class="btn secondary" href="/journal">Cancel</a>
+        <button class="btn success" id="saveBtn" onclick="save()" disabled>Post entry</button>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const editId = new URLSearchParams(window.location.search).get('edit');
+    let accountOptions = '';
+    let checkTimer = null;
+    let checkSeq = 0;
+    let lastCheckOk = false;
+
+    function lineRow(line = {}) {
+        return `<tr>
+            <td><select class="acct" oninput="scheduleCheck()">
+                <option value="">Choose an account...</option>${accountOptions}</select></td>
+            <td class="num"><input type="text" inputmode="decimal" class="debit" oninput="scheduleCheck()"
+                value="${escapeHtml(line.debit ?? '')}"></td>
+            <td class="num"><input type="text" inputmode="decimal" class="credit" oninput="scheduleCheck()"
+                value="${escapeHtml(line.credit ?? '')}"></td>
+            <td><input type="text" class="memo" maxlength="255" value="${escapeHtml(line.memo ?? '')}"></td>
+            <td><button class="btn small secondary" title="Remove line" onclick="removeLine(this)">&times;</button></td>
+        </tr>`;
+    }
+
+    function addLine(line) {
+        const body = document.getElementById('linesBody');
+        body.insertAdjacentHTML('beforeend', lineRow(line));
+        if (line && line.account_id) body.lastElementChild.querySelector('.acct').value = String(line.account_id);
+    }
+
+    function removeLine(button) {
+        button.closest('tr').remove();
+        scheduleCheck();
+    }
+
+    function collect() {
+        return {
+            entry_date: document.getElementById('entryDate').value,
+            memo: document.getElementById('entryMemo').value,
+            lines: [...document.querySelectorAll('#linesBody tr')].map((tr) => ({
+                account_id: tr.querySelector('.acct').value || null,
+                debit: tr.querySelector('.debit').value,
+                credit: tr.querySelector('.credit').value,
+                memo: tr.querySelector('.memo').value,
+            })),
+        };
+    }
+
+    function scheduleCheck() {
+        lastCheckOk = false;
+        document.getElementById('saveBtn').disabled = true;
+        clearTimeout(checkTimer);
+        checkTimer = setTimeout(runCheck, 250);
+    }
+
+    async function runCheck() {
+        const seq = ++checkSeq;
+        try {
+            const { check } = await api('/api/journal/validate', { method: 'POST', body: collect() });
+            if (seq !== checkSeq) return;  // a newer edit is already being checked
+            document.getElementById('totalDebits').textContent = formatMoney(check.total_debits);
+            document.getElementById('totalCredits').textContent = formatMoney(check.total_credits);
+            const diff = Number(check.difference);
+            const line = document.getElementById('balanceLine');
+            line.textContent = diff === 0 ? 'Balanced' : `Out of balance by ${formatMoney(Math.abs(diff))}`;
+            line.className = 'balance-line ' + (diff === 0 ? 'positive' : 'negative');
+            const problems = document.getElementById('problems');
+            problems.hidden = check.ok;
+            problems.innerHTML = check.ok ? '' :
+                '<strong>Not ready to post:</strong><ul>' +
+                check.problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('') + '</ul>';
+            lastCheckOk = check.ok;
+            document.getElementById('saveBtn').disabled = !check.ok;
+        } catch (e) {
+            if (seq !== checkSeq) return;
+            document.getElementById('balanceLine').textContent = `Check failed: ${e.message}`;
+        }
+    }
+
+    async function save() {
+        if (!lastCheckOk) return;
+        const done = setBusy(document.getElementById('saveBtn'), 'Posting...');
+        try {
+            if (editId) {
+                const data = await api(`/api/journal/entries/${editId}/replace`, { method: 'POST', body: collect() });
+                window.location.href = `/journal?posted=${data.entry.id}`;
+            } else {
+                const data = await api('/api/journal/entries', { method: 'POST', body: collect() });
+                window.location.href = `/journal?posted=${data.entry.id}`;
+            }
+        } catch (e) {
+            showError(e.message);
+            done();
+            scheduleCheck();
+        }
+    }
+
+    async function init() {
+        const body = document.getElementById('linesBody');
+        try {
+            const { accounts } = await api('/api/accounts');
+            accountOptions = accounts.filter((a) => a.postable).map((a) =>
+                `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+            body.innerHTML = '';
+            document.getElementById('entryDate').value = localDateISO();
+
+            if (editId) {
+                const { entry } = await api(`/api/journal/entries/${encodeURIComponent(editId)}`);
+                const note = document.getElementById('editNote');
+                note.hidden = false;
+                if (!entry.editable) {
+                    note.className = 'alert alert-warning';
+                    note.textContent = `Entry #${entry.id} cannot be edited here (${entry.source}`
+                        + (entry.reversed_by_entry_id ? `, already reversed by #${entry.reversed_by_entry_id}` : '') + ').';
+                    document.getElementById('saveBtn').hidden = true;
+                    return;
+                }
+                note.textContent = `Editing entry #${entry.id}. Posting reverses #${entry.id} and posts `
+                    + 'this as a new entry, in one step, so both show in the journal.';
+                document.getElementById('saveBtn').textContent = `Reverse #${entry.id} and post`;
+                document.querySelector('.header h1').textContent = `Edit Entry #${entry.id}`;
+                document.getElementById('entryDate').value = entry.entry_date;
+                document.getElementById('entryMemo').value = entry.memo ?? '';
+                entry.lines.forEach((l) => addLine(l));
+            } else {
+                addLine();
+                addLine();
+            }
+            scheduleCheck();
+        } catch (e) {
+            tableMessage(body, 5, e.message, true);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - journal_new.html -->

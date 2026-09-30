@@ -1,13 +1,16 @@
 <!--
-General Ledger v0.1.0
+General Ledger v0.2.0
 File: templates/base.html
 Description: Base layout - header, top nav, status area. Every page extends this.
-Child templates set: active_nav, page_title, page_subtitle; optional header_bottom, styles, scripts.
-Two additions to the docs/STYLING.md 12.2 reference: `hide_nav` (the login page has no
-nav to offer), and a Sign out button in .header-bottom whenever someone is signed in.
-header_bottom now supplies only that row's CONTENT (e.g. a sub-menu), not the row itself.
+Child templates set: active_nav, active_sub, page_title, page_subtitle; optional
+header_bottom, styles, scripts.
+Additions to the docs/STYLING.md 12.2 reference: `hide_nav` (the login page has no nav to
+offer); a Sign out button in .header-bottom whenever someone is signed in; and the
+section's sub-menu, rendered here from SUB_MENUS in app.py so it cannot drift between
+pages. header_bottom supplies only extra CONTENT for that row, not the row itself.
 -->
 {% set active_nav = active_nav | default('') %}
+{% set active_sub = active_sub | default('') %}
 {% set hide_nav = hide_nav | default(false) %}
 <!DOCTYPE html>
 <html lang="en">
@@ -39,6 +42,13 @@ header_bottom now supplies only that row's CONTENT (e.g. a sub-menu), not the ro
             {% if session.get('owner') %}
             <div class="header-bottom">
                 <div class="section-actions">
+                    {% if SUB_MENUS.get(active_nav) %}
+                    <nav class="sub-menu">
+                        {% for item in SUB_MENUS[active_nav] %}
+                        <a href="{{ item.url }}" class="{{ 'active' if item.key == active_sub else '' }}">{{ item.label }}</a>
+                        {% endfor %}
+                    </nav>
+                    {% endif %}
                     {% block header_bottom %}{% endblock %}
                     <button class="btn small secondary" id="signOutBtn" onclick="signOut(this)">Sign out</button>
                 </div>

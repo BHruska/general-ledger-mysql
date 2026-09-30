@@ -1,0 +1,101 @@
+<!--
+General Ledger v0.2.0
+File: templates/reports_trial_balance.html
+Description: Reports -> Trial Balance. Every account's balance at a date as a debit or a
+             credit; the server says whether the totals agree.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% set active_sub = 'trial-balance' %}
+
+{% block page_title %}Trial Balance{% endblock %}
+{% block page_subtitle %}Every account's balance at a date. Debits and credits must agree.{% endblock %}
+
+{% block styles %}
+<style>
+    tr.header-acct td { font-weight: 600; color: var(--text-muted); }
+    tr.sub-acct td:nth-child(2) { padding-left: 24px; }
+    #tbBody tr.total-row td { font-weight: 700; border-top: 2px solid var(--border); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="asOf">As of</label>
+            <input type="date" id="asOf">
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn" id="runBtn" onclick="runReport()">Run</button>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2 id="tbTitle">Trial Balance</h2>
+        <div class="section-actions"><span class="status-line" id="tbStatus"></span></div>
+    </div>
+    <div class="alert" id="tbCheck" hidden></div>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr><th>Number</th><th>Account</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead>
+            <tbody id="tbBody"><tr><td colspan="4" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+    <p class="note" id="tbNote" hidden></p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function money(v) { return v === null ? '' : formatMoney(v); }
+
+    async function runReport() {
+        const body = document.getElementById('tbBody');
+        const status = document.getElementById('tbStatus');
+        const done = setBusy(document.getElementById('runBtn'), 'Running...');
+        status.textContent = 'Running...';
+        try {
+            const asOf = document.getElementById('asOf').value;
+            const { report: r } = await api('/api/reports/trial-balance' + (asOf ? `?as_of=${asOf}` : ''));
+            document.getElementById('asOf').value = r.as_of;
+            document.getElementById('tbTitle').textContent = `Trial Balance at ${r.as_of}`;
+            const rows = r.rows.map((row) => {
+                const cls = row.is_header ? 'header-acct' : (row.parent_id !== null ? 'sub-acct' : '');
+                const link = row.is_header ? escapeHtml(row.name)
+                    : `<a href="/journal/registers?account=${row.account_id}">${escapeHtml(row.name)}</a>`;
+                return `<tr class="${cls}">
+                    <td>${escapeHtml(row.number)}</td><td>${link}</td>
+                    <td class="num">${money(row.debit)}</td><td class="num">${money(row.credit)}</td>
+                </tr>`;
+            }).join('');
+            body.innerHTML = (rows || '<tr><td colspan="4" class="empty">No balances at this date.</td></tr>')
+                + `<tr class="total-row"><td></td><td>Total</td>
+                   <td class="num">${formatMoney(r.total_debit)}</td><td class="num">${formatMoney(r.total_credit)}</td></tr>`;
+            const check = document.getElementById('tbCheck');
+            check.hidden = false;
+            check.className = 'alert ' + (r.balanced ? 'alert-success' : 'alert-error');
+            check.textContent = r.balanced ? 'In balance: total debits equal total credits.'
+                : 'OUT OF BALANCE: total debits and credits differ. The journal has a broken entry.';
+            const note = document.getElementById('tbNote');
+            note.hidden = false;
+            note.textContent = `Income and expense accounts show the fiscal year from ${r.fiscal_year_start}. `
+                + `Retained Earnings includes ${formatMoney(r.prior_years_net_income)} of net income from earlier years, `
+                + 'computed rather than posted.';
+            status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Run failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 4, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', runReport);
+</script>
+{% endblock %}
+
+<!-- EOF - reports_trial_balance.html -->

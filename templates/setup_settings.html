@@ -1,0 +1,158 @@
+<!--
+General Ledger v0.2.0
+File: templates/setup_settings.html
+Description: Setup -> Settings. Company details, fiscal year, and the lock date - the
+             only close (docs/DESIGN.md section 3.4).
+-->
+{% extends "base.html" %}
+{% set active_nav = 'setup' %}
+{% set active_sub = 'settings' %}
+
+{% block page_title %}Settings{% endblock %}
+{% block page_subtitle %}Company details, fiscal year and the lock date.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2>Company</h2>
+        <div class="section-actions"><span class="status-line" id="companyStatus"></span></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label for="companyName">Company name</label>
+            <input type="text" id="companyName" maxlength="120" oninput="markChanges()">
+        </div>
+        <div class="form-group">
+            <label for="fyMonth">Fiscal year starts</label>
+            <select id="fyMonth" onchange="markChanges()"></select>
+        </div>
+    </div>
+    <div class="form-group">
+        <label for="companyAddress">Address</label>
+        <textarea id="companyAddress" rows="3" oninput="markChanges()"></textarea>
+        <small>Printed on invoices (phase 5).</small>
+    </div>
+    <p class="note" id="accountRefs"></p>
+    <div class="form-actions">
+        <button class="btn" id="companySaveBtn" onclick="saveCompany()" disabled>Save</button>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Lock date</h2>
+    <div class="info-box">
+        Nothing dated on or before the lock date can be posted, edited or reversed. Set it once the
+        accountant has the year-end numbers. Moving it backwards reopens closed books, so it asks
+        for a reason, which is kept in the audit log.
+    </div>
+    <p>Current lock date: <strong id="currentLock">—</strong></p>
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="newLock">New lock date</label>
+            <input type="date" id="newLock">
+            <small>Leave empty to remove the lock.</small>
+        </div>
+        <div class="form-group" style="grid-column: span 2;">
+            <label for="lockReason">Reason (required when moving backwards)</label>
+            <input type="text" id="lockReason" maxlength="200">
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn" id="lockBtn" onclick="setLock()">Set lock date</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                    'August', 'September', 'October', 'November', 'December'];
+    let saved = null;
+
+    function fields() {
+        return {
+            company_name: document.getElementById('companyName').value,
+            company_address: document.getElementById('companyAddress').value,
+            fiscal_year_start_month: Number(document.getElementById('fyMonth').value),
+        };
+    }
+
+    function markChanges() {
+        const now = fields();
+        let changed = false;
+        [['companyName', 'company_name'], ['companyAddress', 'company_address'], ['fyMonth', 'fiscal_year_start_month']]
+            .forEach(([id, key]) => {
+                const differs = String(now[key]) !== String(saved[key] ?? '');
+                document.getElementById(id).classList.toggle('has-changes', differs);
+                changed = changed || differs;
+            });
+        document.getElementById('companySaveBtn').disabled = !changed;
+    }
+
+    function show(s) {
+        saved = s;
+        document.getElementById('companyName').value = s.company_name;
+        document.getElementById('companyAddress').value = s.company_address ?? '';
+        document.getElementById('fyMonth').value = String(s.fiscal_year_start_month);
+        document.getElementById('currentLock').textContent = s.lock_date === null ? 'none' : s.lock_date;
+        document.getElementById('newLock').value = s.lock_date ?? '';
+        document.getElementById('accountRefs').textContent =
+            `Accounts receivable posts to ${s.ar_account}; retained earnings are reported on ${s.retained_earnings_account}.`;
+        markChanges();
+    }
+
+    async function load() {
+        document.getElementById('fyMonth').innerHTML =
+            MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
+        try {
+            show((await api('/api/settings')).settings);
+        } catch (e) {
+            document.getElementById('companyStatus').textContent = `Load failed: ${e.message}`;
+        }
+    }
+
+    async function saveCompany() {
+        const done = setBusy(document.getElementById('companySaveBtn'), 'Saving...');
+        try {
+            show((await api('/api/settings', { method: 'PATCH', body: fields() })).settings);
+            showSuccess('Settings saved.');
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            done();
+            markChanges();
+        }
+    }
+
+    async function setLock() {
+        const value = document.getElementById('newLock').value;
+        const current = saved.lock_date;
+        if (value === (current ?? '')) { showInfo('The lock date is already that.'); return; }
+        const backwards = current !== null && (value === '' || value < current);
+        const message = value === ''
+            ? `Remove the lock date (${current})? Every closed period becomes editable again.`
+            : backwards
+                ? `Move the lock date BACK from ${current} to ${value}? Entries between them become editable again.`
+                : `Lock the books through ${value}? Nothing dated on or before it can be posted, edited or reversed.`;
+        if (!confirm(message)) return;
+        const done = setBusy(document.getElementById('lockBtn'), 'Setting...');
+        try {
+            show((await api('/api/settings/lock-date', {
+                method: 'POST',
+                body: { lock_date: value || null, reason: document.getElementById('lockReason').value },
+            })).settings);
+            document.getElementById('lockReason').value = '';
+            showSuccess(value ? `Books locked through ${value}.` : 'Lock date removed.');
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            done();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}
+
+<!-- EOF - setup_settings.html -->

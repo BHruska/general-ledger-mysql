@@ -50,14 +50,49 @@ def migrated_database():
     yield
 
 
+# A small known chart, rebuilt before every test. number: (name, type, parent number)
+TEST_CHART = {
+    "1010": ("Checking", "ASSET", None),
+    "1200": ("Accounts Receivable", "ASSET", None),
+    "2010": ("Card", "LIABILITY", None),
+    "3000": ("Owner's Equity", "EQUITY", None),
+    "3900": ("Retained Earnings", "EQUITY", None),
+    "4000": ("Revenue", "INCOME", None),
+    "6100": ("Software", "EXPENSE", None),
+    "6110": ("Hosting", "EXPENSE", "6100"),
+    "6120": ("SaaS", "EXPENSE", "6100"),
+    "6300": ("Travel", "EXPENSE", None),
+}
+
+# Child tables first. TRUNCATE skips the DELETE triggers that forbid removing posted
+# lines, which is the only reason the suite can reset them at all.
+RESET_TABLES = ("journal_line", "journal_entry", "audit_log", "payee", "account")
+
+
 @pytest.fixture(autouse=True)
-def reset_settings(migrated_database):
+def chart(migrated_database):
+    """Empty books with TEST_CHART, a clean settings row, and no lock date.
+
+    Returns {account number: id}.
+    """
+    ids = {}
     with db.engine.begin() as conn:
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
+        for table in RESET_TABLES:
+            conn.execute(text(f"TRUNCATE TABLE {table}"))
+        conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
+        for number, (name, type_, parent) in TEST_CHART.items():
+            result = conn.execute(
+                text("INSERT INTO account (number, name, type, parent_id) VALUES (:n, :name, :t, :p)"),
+                {"n": number, "name": name, "t": type_, "p": ids.get(parent)},
+            )
+            ids[number] = result.lastrowid
         conn.execute(text(
-            "UPDATE settings SET company_name = '', owner_password_hash = NULL, "
-            "totp_secret_ref = NULL WHERE id = 1"
-        ))
-    yield
+            "UPDATE settings SET company_name = '', company_address = NULL, owner_password_hash = NULL, "
+            "totp_secret_ref = NULL, fiscal_year_start_month = 1, lock_date = NULL, "
+            "ar_account_id = :ar, retained_earnings_account_id = :re WHERE id = 1"
+        ), {"ar": ids["1200"], "re": ids["3900"]})
+    yield ids
 
 
 @pytest.fixture

@@ -1,5 +1,5 @@
 """
-General Ledger v0.1.0
+General Ledger v0.2.0
 File: app.py
 Description: Flask entry point - registers blueprints and the shared top-nav list.
 """
@@ -13,6 +13,9 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 import config
 from routes.auth_routes import auth_bp
 from routes.core_routes import core_bp
+from routes.journal_routes import journal_bp
+from routes.reports_routes import reports_bp
+from routes.setup_routes import setup_bp
 from utils import credentials
 
 logging.basicConfig(
@@ -44,18 +47,43 @@ app.config.update(
 
 app.register_blueprint(auth_bp)
 app.register_blueprint(core_bp)
+app.register_blueprint(journal_bp)
+app.register_blueprint(setup_bp)
+app.register_blueprint(reports_bp)
 
 # The ONE definition of the top nav. Major sections only - do not add entries
-# without the owner's explicit approval. docs/DESIGN.md section 12.1 proposes six;
-# only Dashboard exists until they are approved and built.
+# without the owner's explicit approval. These six are docs/DESIGN.md section 12.1,
+# approved by the owner on 2026-09-29.
 NAV_ITEMS = [
     {"key": "dashboard", "label": "Dashboard", "url": "/"},
+    {"key": "banking", "label": "Banking", "url": "/banking"},
+    {"key": "journal", "label": "Journal", "url": "/journal"},
+    {"key": "invoices", "label": "Invoices", "url": "/invoices"},
+    {"key": "reports", "label": "Reports", "url": "/reports"},
+    {"key": "setup", "label": "Setup", "url": "/setup"},
 ]
+
+# Each section's sub-menu, defined once so every page in the section shows the same
+# one (docs/STYLING.md section 4). Entries join as their pages are built.
+SUB_MENUS = {
+    "journal": [
+        {"key": "entries", "label": "Entries", "url": "/journal"},
+        {"key": "new", "label": "New entry", "url": "/journal/new"},
+        {"key": "registers", "label": "Registers", "url": "/journal/registers"},
+    ],
+    "reports": [
+        {"key": "trial-balance", "label": "Trial Balance", "url": "/reports/trial-balance"},
+    ],
+    "setup": [
+        {"key": "accounts", "label": "Accounts", "url": "/setup/accounts"},
+        {"key": "settings", "label": "Settings", "url": "/setup/settings"},
+    ],
+}
 
 
 @app.context_processor
 def inject_nav():
-    return {"NAV_ITEMS": NAV_ITEMS, "APP_VERSION": config.APP_VERSION,
+    return {"NAV_ITEMS": NAV_ITEMS, "SUB_MENUS": SUB_MENUS, "APP_VERSION": config.APP_VERSION,
             "APP_TITLE_PREFIX": config.APP_TITLE_PREFIX}
 
 

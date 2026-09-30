@@ -1,0 +1,18 @@
+<!--
+General Ledger v0.2.0
+File: templates/placeholder.html
+Description: An approved nav section whose pages arrive in a later phase.
+-->
+{% extends "base.html" %}
+{% set active_nav = section | default('') %}
+
+{% block page_title %}{{ placeholder_title | default('Coming later') }}{% endblock %}
+{% block page_subtitle %}{{ placeholder_subtitle | default('') }}{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="empty-state">Not built yet. {{ placeholder_arrives | default('') }}</div>
+</div>
+{% endblock %}
+
+<!-- EOF - placeholder.html -->

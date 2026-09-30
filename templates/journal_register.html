@@ -1,0 +1,120 @@
+<!--
+General Ledger v0.2.0
+File: templates/journal_register.html
+Description: Journal -> Registers. One account's lines with a running balance in the
+             account's normal direction, computed by the server.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'journal' %}
+{% set active_sub = 'registers' %}
+
+{% block page_title %}Account Register{% endblock %}
+{% block page_subtitle %}One account's lines, with a running balance.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="accountSelect">Account</label>
+            <select id="accountSelect"><option value="">Loading...</option></select>
+        </div>
+        <div class="form-group">
+            <label for="startDate">From</label>
+            <input type="date" id="startDate">
+        </div>
+        <div class="form-group">
+            <label for="endDate">To</label>
+            <input type="date" id="endDate">
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn" id="loadBtn" onclick="loadRegister()">Load</button>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2 id="registerTitle">Register</h2>
+        <div class="section-actions"><span class="status-line" id="registerStatus"></span></div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr>
+                <th>Date</th><th>Entry</th><th>Memo</th><th>Other side</th>
+                <th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th><th>Cleared</th>
+            </tr></thead>
+            <tbody id="registerBody">
+                <tr><td colspan="8" class="empty">Choose an account and Load.</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function money(v) { return v === null ? '' : formatMoney(v); }
+
+    async function loadRegister() {
+        const accountId = document.getElementById('accountSelect').value;
+        const body = document.getElementById('registerBody');
+        const status = document.getElementById('registerStatus');
+        if (!accountId) { tableMessage(body, 8, 'Choose an account and Load.'); return; }
+        const done = setBusy(document.getElementById('loadBtn'), 'Loading...');
+        status.textContent = 'Loading...';
+        try {
+            const params = new URLSearchParams({ account_id: accountId });
+            const start = document.getElementById('startDate').value;
+            const end = document.getElementById('endDate').value;
+            if (start) params.set('start', start);
+            if (end) params.set('end', end);
+            const { register: r } = await api('/api/journal/register?' + params);
+            document.getElementById('startDate').value = r.start;
+            document.getElementById('endDate').value = r.end;
+            document.getElementById('registerTitle').textContent = `${r.account.number} ${r.account.name}`;
+            history.replaceState(null, '', `?account=${r.account.id}`);
+            const opening = `<tr><td>${escapeHtml(r.start)}</td><td></td><td colspan="4"><em>Opening balance</em></td>
+                <td class="num"><strong>${formatMoney(r.opening_balance)}</strong></td><td></td></tr>`;
+            const rows = r.lines.map((l) => `<tr>
+                <td>${escapeHtml(l.entry_date)}</td>
+                <td>#${l.entry_id}${l.reversed ? ' <span class="chip">REV</span>' : ''}</td>
+                <td>${escapeHtml(l.memo ?? '')}</td>
+                <td>${l.other_side === null ? '—' : escapeHtml(l.other_side)}</td>
+                <td class="num">${money(l.debit)}</td>
+                <td class="num">${money(l.credit)}</td>
+                <td class="num">${formatMoney(l.balance)}</td>
+                <td>${l.cleared ? '✓' : ''}</td>
+            </tr>`).join('');
+            const empty = r.lines.length ? '' : '<tr><td colspan="8" class="empty">No lines in this range.</td></tr>';
+            body.innerHTML = opening + rows + empty;
+            status.textContent = `${r.lines.length} lines · closing ${formatMoney(r.closing_balance)}`;
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 8, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    async function init() {
+        const select = document.getElementById('accountSelect');
+        try {
+            const { accounts } = await api('/api/accounts');
+            select.innerHTML = '<option value="">Choose an account...</option>' + accounts
+                .filter((a) => !a.is_header)
+                .map((a) => `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}${a.is_active ? '' : ' (inactive)'}</option>`)
+                .join('');
+            const preset = new URLSearchParams(window.location.search).get('account');
+            if (preset) { select.value = preset; loadRegister(); }
+        } catch (e) {
+            select.innerHTML = '<option value="">Accounts failed to load</option>';
+            showError(e.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - journal_register.html -->
