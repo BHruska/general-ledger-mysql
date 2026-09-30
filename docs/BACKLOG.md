@@ -14,7 +14,6 @@ this project (it is not a synced copy from `_standards`). The build order itself
 
 | Item | Why |
 | --- | --- |
-| Speed up the test suite | ~4 minutes, mostly TRUNCATE of every table before each test. Truncate only what a test touched, or wrap tests in a rolled-back transaction where triggers allow. |
 | TOTP second factor for the owner login | DESIGN.md §11 marks it optional; deferred in phase 0. Plaid's questionnaire may ask about MFA if the plan is ever upgraded from Trial. |
 | Payee phone, company and account number | The QBO vendor list carries them; the `payee` table has only email and address. |
 | QFX import | Deliberately left out (CSV carries full descriptions). Revisit only if a bank offers no CSV. |

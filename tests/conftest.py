@@ -70,10 +70,12 @@ TEST_CHART = {
 # Accounts a bank feed can post to.
 TEST_BANK_ACCOUNTS = {"1010", "2010"}
 
-# TRUNCATE skips the DELETE triggers that forbid removing posted lines, which is the
-# only reason the suite can reset them at all. Foreign-key checks are off meanwhile.
 RESET_TABLES = ("attachment", "bank_txn", "payee_rule", "bank_account", "bank_connection", "journal_line",
                 "journal_entry", "audit_log", "payee", "account")
+
+# The immutability triggers forbid DELETE on these, so they are TRUNCATEd -- which skips
+# triggers, and is the only reason the suite can reset them at all.
+TRIGGER_GUARDED = {"journal_line", "journal_entry"}
 
 
 @pytest.fixture(autouse=True)
@@ -81,12 +83,21 @@ def chart(migrated_database):
     """Empty books with TEST_CHART, a clean settings row, and no lock date.
 
     Returns {account number: id}.
+
+    Only tables a test actually dirtied are cleared, and with DELETE wherever triggers
+    allow: on Docker Desktop a TRUNCATE rebuilds the table and syncs it to disk, about
+    0.1 s each, while a DELETE of a few rows is about a millisecond. Truncating all ten
+    tables before every test was most of the suite's run time. Ids therefore keep
+    counting up between tests; tests use the ids fixtures return, never literals.
     """
     ids = {}
     with db.engine.begin() as conn:
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 0"))
         for table in RESET_TABLES:
-            conn.execute(text(f"TRUNCATE TABLE {table}"))
+            if not conn.execute(text(f"SELECT EXISTS(SELECT 1 FROM {table})")).scalar():
+                continue
+            verb = "TRUNCATE TABLE" if table in TRIGGER_GUARDED else "DELETE FROM"
+            conn.execute(text(f"{verb} {table}"))
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
         for number, (name, type_, parent) in TEST_CHART.items():
             result = conn.execute(
@@ -102,6 +113,24 @@ def chart(migrated_database):
             "ar_account_id = :ar, retained_earnings_account_id = :re WHERE id = 1"
         ), {"ar": ids["1200"], "re": ids["3900"]})
     yield ids
+
+
+@pytest.fixture(autouse=True)
+def fast_auth(monkeypatch):
+    """Production pays these costs on purpose; tests only need the behaviour.
+
+    - A failed login waits a second (slows password guessing); here it would just
+      wait, once per failed-login test.
+    - The owner password hash uses argon2-cffi's deliberately expensive defaults; the
+      tests check the flow and the $argon2id$ format, not the cost.
+    """
+    from argon2 import PasswordHasher
+
+    from routes import auth_routes
+    from utils import auth
+
+    monkeypatch.setattr(auth_routes, "FAILED_LOGIN_DELAY_S", 0)
+    monkeypatch.setattr(auth, "_hasher", PasswordHasher(time_cost=1, memory_cost=8, parallelism=1))
 
 
 @pytest.fixture
