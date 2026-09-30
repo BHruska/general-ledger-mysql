@@ -1,31 +1,60 @@
 <!--
-General Ledger v0.4.2
+General Ledger v0.4.3
 File: templates/partials/_account_picker.html
 Description: Type-to-search account picker. enhanceAccountSelect(select) hides a <select>
              and puts a search box in its place: every word typed must appear in the
-             account's number or name ("office", "64", "web host"). The <select> stays
-             the source of truth -- choosing sets its value and fires input/change -- so
-             forms, handlers and the server see exactly what they saw before.
-             After setting a select's value in code, call syncPicker(select).
+             account's number or name, or its parent's ("office", "64", "web host",
+             "automobile"). Sub-accounts are listed indented under their parent, which
+             shows as a heading and cannot be chosen (a header takes no postings).
+             The <select> stays the source of truth -- choosing sets its value and fires
+             input/change -- so forms, handlers and the server see what they saw before.
+             Build the options with accountOptionsHtml(accounts); after setting a
+             select's value in code, call syncPicker(select).
 -->
 <style>
     input.picker-input { width: 100%; }
     .picker-list {
         position: fixed; z-index: 3000; /* above modals (2000) */
         background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
-        box-shadow: 0 8px 24px rgba(0,0,0,0.2); max-height: 280px; overflow-y: auto; font-size: 13px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.2); max-height: 300px; overflow-y: auto; font-size: 13px;
     }
     .picker-item { padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+    .picker-item.sub { padding-left: 28px; }
     .picker-item.active { background: #d6e6ff; }
+    .picker-heading { padding: 6px 10px 2px; font-weight: 600; color: var(--text-muted); white-space: nowrap; cursor: default; }
     .picker-empty { padding: 6px 10px; color: var(--text-faint); }
 </style>
 
 <script>
+    /* <option>s for an account <select>, from /api/accounts rows (already in number order).
+       Postable accounts are choosable; a parent appears once, as a disabled heading, above
+       the sub-accounts that made the cut. excludeBank leaves bank and card accounts out. */
+    function accountOptionsHtml(accounts, { excludeBank = false } = {}) {
+        const byId = Object.fromEntries(accounts.map((a) => [a.id, a]));
+        const keep = accounts.filter((a) => a.postable && !(excludeBank && a.is_bank_account));
+        const html = [];
+        const shownHeaders = new Set();
+        for (const a of keep) {
+            const parent = a.parent_id !== null ? byId[a.parent_id] : null;
+            if (parent && !shownHeaders.has(parent.id)) {
+                shownHeaders.add(parent.id);
+                html.push(`<option value="" disabled data-heading="${parent.id}">${escapeHtml(parent.number)} ${escapeHtml(parent.name)}</option>`);
+            }
+            html.push(`<option value="${a.id}"${parent ? ` data-parent="${parent.id}" data-parent-name="${escapeHtml(parent.name)}"` : ''}>`
+                + `${parent ? '    ' : ''}${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`);
+        }
+        return html.join('');
+    }
+
+    function optionLabel(option) {
+        return option.text.replace(/^ +/, '');
+    }
+
     function syncPicker(select) {
         const input = select._pickerInput;
         if (!input) return;
         const option = select.selectedOptions[0];
-        input.value = option && option.value !== '' ? option.text : '';
+        input.value = option && option.value !== '' ? optionLabel(option) : '';
     }
 
     function enhanceAccountSelect(select) {
@@ -36,17 +65,16 @@ Description: Type-to-search account picker. enhanceAccountSelect(select) hides a
         input.autocomplete = 'off';
         input.setAttribute('role', 'combobox');
         const first = select.options[0];
-        input.placeholder = first && first.value === '' ? first.text.replace('...', '') + ' (type to search)' : 'Type to search';
+        input.placeholder = first && first.value === '' && !first.disabled
+            ? first.text.replace('...', '') + ' (type to search)' : 'Type to search';
         if (select.id) input.setAttribute('aria-label', select.id);
         select.hidden = true;
         select.after(input);
         select._pickerInput = input;
 
         let list = null;
-        let matches = [];
+        let matches = [];   // choosable options, in display order; `active` indexes this
         let active = 0;
-
-        const choices = () => [...select.options].filter((o) => o.value !== '');
 
         function close() {
             if (list) { list.remove(); list = null; }
@@ -56,12 +84,16 @@ Description: Type-to-search account picker. enhanceAccountSelect(select) hides a
             const r = input.getBoundingClientRect();
             list.style.left = `${r.left}px`;
             list.style.top = `${r.bottom + 2}px`;
-            list.style.minWidth = `${Math.max(r.width, 320)}px`;
+            list.style.minWidth = `${Math.max(r.width, 340)}px`;
         }
 
         function render(query) {
             const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-            matches = choices().filter((o) => words.every((w) => o.text.toLowerCase().includes(w)));
+            const headings = Object.fromEntries([...select.options].filter((o) => o.dataset.heading)
+                .map((o) => [o.dataset.heading, o.text]));
+            // A sub-account also answers to its parent's name: "automobile" finds "Fuel".
+            const haystack = (o) => (optionLabel(o) + ' ' + (o.dataset.parentName || '')).toLowerCase();
+            matches = [...select.options].filter((o) => o.value !== '' && words.every((w) => haystack(o).includes(w)));
             active = Math.min(active, Math.max(matches.length - 1, 0));
             if (!list) {
                 list = document.createElement('div');
@@ -75,9 +107,17 @@ Description: Type-to-search account picker. enhanceAccountSelect(select) hides a
                 });
                 document.body.appendChild(list);
             }
-            list.innerHTML = matches.length
-                ? matches.map((o, i) => `<div class="picker-item${i === active ? ' active' : ''}" data-i="${i}" role="option">${escapeHtml(o.text)}</div>`).join('')
-                : '<div class="picker-empty">No account matches.</div>';
+            const html = [];
+            let lastHeading = null;
+            matches.forEach((o, i) => {
+                const parent = o.dataset.parent || null;
+                if (parent && parent !== lastHeading) {
+                    html.push(`<div class="picker-heading">${escapeHtml(headings[parent] || '')}</div>`);
+                }
+                lastHeading = parent;
+                html.push(`<div class="picker-item${parent ? ' sub' : ''}${i === active ? ' active' : ''}" data-i="${i}" role="option">${escapeHtml(optionLabel(o))}</div>`);
+            });
+            list.innerHTML = html.length ? html.join('') : '<div class="picker-empty">No account matches.</div>';
             place();
             const current = list.querySelector('.picker-item.active');
             if (current) current.scrollIntoView({ block: 'nearest' });
@@ -86,7 +126,7 @@ Description: Type-to-search account picker. enhanceAccountSelect(select) hides a
         function choose(option) {
             if (!option) return;
             select.value = option.value;
-            input.value = option.text;
+            input.value = optionLabel(option);
             close();
             select.dispatchEvent(new Event('input', { bubbles: true }));
             select.dispatchEvent(new Event('change', { bubbles: true }));

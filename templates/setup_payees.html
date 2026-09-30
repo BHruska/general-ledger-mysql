@@ -217,8 +217,7 @@ Description: Setup -> Payees. Vendors and customers, with the default account a 
     async function init() {
         try {
             const { accounts } = await api('/api/accounts');
-            accountOptions = accounts.filter((a) => a.postable && !a.is_bank_account).map((a) =>
-                `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+            accountOptions = accountOptionsHtml(accounts, { excludeBank: true });
         } catch (e) {
             showError(e.message);
         }

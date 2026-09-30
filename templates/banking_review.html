@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.4.2
+General Ledger v0.4.3
 File: templates/banking_review.html
 Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3). Each
              line arrives with a suggestion (rule, payee, history or transfer) already
@@ -24,6 +24,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     td.why { font-size: 12px; }
     label.remember { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: normal; }
     #splitTable input, #splitTable select { width: 100%; }
+    tr.similar-bar td { padding-top: 0; }
+    tr.similar-bar .info-box { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 </style>
 {% endblock %}
 
@@ -208,6 +210,54 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         const changed = value !== (line.suggested_account_id === null ? '' : String(line.suggested_account_id));
         document.getElementById(`remember${id}`).checked = changed && value !== '';
         document.querySelector(`tr[data-id="${id}"]`).classList.toggle('has-changes', changed);
+        showSimilar(id);
+    }
+
+    // ---------- similar lines: offer to post the rest of a payee's lines with this one
+    const similarIds = {};
+
+    async function showSimilar(id) {
+        const bar = () => document.getElementById(`similar${id}`);
+        if (bar()) bar().remove();
+        const sel = document.getElementById(`postTo${id}`);
+        if (!sel.value) return;
+        const chosen = sel.value;
+        try {
+            const r = await api(`/api/banking/lines/${id}/similar`);
+            // The account may have changed again while this was in flight.
+            if (!r.lines.length || sel.value !== chosen) return;
+            if (bar()) bar().remove();
+            similarIds[id] = r.lines.map((l) => l.id);
+            const dates = r.lines.slice(0, 6).map((l) => l.posted_date).join(', ') + (r.lines.length > 6 ? ', ...' : '');
+            const label = sel._pickerInput ? sel._pickerInput.value : sel.selectedOptions[0].text;
+            document.querySelector(`tr[data-id="${id}"]`).insertAdjacentHTML('afterend', `
+                <tr class="similar-bar" id="similar${id}"><td colspan="7"><div class="info-box">
+                    <span><strong>${r.lines.length} more line${r.lines.length === 1 ? '' : 's'}</strong> look like
+                        <em>${escapeHtml(r.keyword)}</em> (${escapeHtml(dates)}).</span>
+                    <button class="btn small success" onclick="postWithSimilar(${id}, this)">Post all ${r.lines.length + 1} to ${escapeHtml(label)}</button>
+                    <button class="btn small secondary" onclick="document.getElementById('similar${id}').remove()">Just this one</button>
+                </div></td></tr>`);
+        } catch (e) {
+            showError(`Could not look for similar lines: ${e.message}`);
+        }
+    }
+
+    async function postWithSimilar(id, button) {
+        const accountId = Number(document.getElementById(`postTo${id}`).value);
+        const done = setBusy(button, 'Posting...');
+        try {
+            const r = await api(`/api/banking/lines/${id}/post-with-similar`, {
+                method: 'POST', body: { account_id: accountId, line_ids: similarIds[id], remember: true },
+            });
+            const msg = `Posted ${r.posted} line(s)`
+                + (r.remembered ? `; remembered bank text containing "${r.remembered.pattern}"` : '')
+                + (r.refused.length ? `; ${r.refused.length} refused: ${r.refused.map((x) => x.error).join('; ')}` : '.');
+            r.refused.length ? showWarning(msg) : showSuccess(msg);
+            loadLines();
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
     }
 
     async function loadLines() {
@@ -461,8 +511,7 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
             const [{ accounts }, { accounts: feeds }] = await Promise.all([api('/api/accounts'), api('/api/banking/accounts')]);
             // Bank and card accounts are left out: a line posted to another bank account is a
             // transfer, which the matcher pairs with the other side.
-            accountOptions = accounts.filter((a) => a.postable && !a.is_bank_account).map((a) =>
-                `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+            accountOptions = accountOptionsHtml(accounts, { excludeBank: true });
             const filter = document.getElementById('accountFilter');
             filter.innerHTML = '<option value="">All accounts</option>' + feeds.map((f) =>
                 `<option value="${f.id}">${escapeHtml(f.name)}${f.mask ? ` ··${escapeHtml(f.mask)}` : ''}</option>`).join('');

@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.4.1
+General Ledger v0.4.3
 File: templates/partials/_attachments.html
 Description: The receipts dialog behind every paperclip button. Include it once in a
              page's modals block, then call openAttachments({bank_txn_id | entry_id, title},
@@ -29,8 +29,14 @@ Description: The receipts dialog behind every paperclip button. Include it once 
     let attachTarget = null;
     let attachOnChange = null;
 
+    // Drawn, not an emoji: a font without the paperclip character showed an empty box.
+    const PAPERCLIP_SVG = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+        + 'stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="vertical-align: -2px">'
+        + '<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
+
     function paperclip(count, onclick) {
-        return `<button class="btn small secondary" title="Receipts" onclick="${onclick}">📎${count ? ' ' + count : ''}</button>`;
+        return `<button class="btn small secondary" title="Receipts" aria-label="Receipts" onclick="${onclick}">`
+            + `${PAPERCLIP_SVG}${count ? ' ' + count : ''}</button>`;
     }
 
     function openAttachments(target, onChange) {

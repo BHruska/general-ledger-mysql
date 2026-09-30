@@ -173,8 +173,7 @@ Description: Journal -> New entry (and Edit, via ?edit=<id>). A lines grid with 
         const body = document.getElementById('linesBody');
         try {
             const { accounts } = await api('/api/accounts');
-            accountOptions = accounts.filter((a) => a.postable).map((a) =>
-                `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+            accountOptions = accountOptionsHtml(accounts);
             body.innerHTML = '';
             document.getElementById('entryDate').value = localDateISO();
 

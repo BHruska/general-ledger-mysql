@@ -346,6 +346,64 @@ def unpost(txn_id: int) -> dict:
         return {"reversal_entry_id": reversal.id, "returned": [t.id for t in returned]}
 
 
+def _similar(session, txn: BankTxn) -> tuple[str, list[BankTxn]]:
+    """Other lines in review with the same bank text, as "Remember" would match them:
+    the same keyword (utils/rules.derive_keyword). Transfers are never included -- a card
+    payment is posted as a pair, not to an account."""
+    keyword = rules.derive_keyword(txn.description)
+    probe = PayeeRule(match_field="DESCRIPTION", match_type="CONTAINS", pattern=keyword,
+                      action="SUGGEST", is_active=True)
+    others = session.scalars(select(BankTxn).where(
+        BankTxn.status.in_(REVIEWABLE), BankTxn.id != txn.id)
+        .order_by(BankTxn.posted_date, BankTxn.id)).all()
+    return keyword, [t for t in others
+                     if t.suggestion_reason not in ("TRANSFER", "TRANSFER_WAITING")
+                     and suggest.rule_matches(probe, t)]
+
+
+def similar_lines(txn_id: int) -> dict:
+    with SessionLocal() as session:
+        txn = _txn(session, txn_id)
+        keyword, others = _similar(session, txn)
+        banks = {b.id: b.name + (f" ··{b.mask}" if b.mask else "") for b in session.scalars(select(BankAccount))}
+        return {
+            "keyword": keyword,
+            "lines": [{"id": t.id, "posted_date": t.posted_date.isoformat(), "description": t.description,
+                       "amount": to_str(t.amount), "bank_account": banks[t.bank_account_id]} for t in others],
+        }
+
+
+def post_with_similar(txn_id: int, data: dict) -> dict:
+    """Post one line and the similar lines the owner confirmed, to the same account.
+
+    A person clicked for all of them, so this is still a human posting (DESIGN.md 6.1);
+    it saves the clicks, not the decision. The first line is posted with Remember, so one
+    rule covers the rest of the year. Each line is its own transaction: one refused line
+    (a lock date) is reported and stays in review without blocking the others.
+    """
+    account_id = data.get("account_id")
+    if not account_id:
+        raise LedgerError("Choose an account to post to.")
+    wanted = {int(i) for i in (data.get("line_ids") or [])}
+    with SessionLocal() as session:
+        allowed = {t.id for t in _similar(session, _txn(session, txn_id))[1]}
+    # Only lines that are similar right now: a stale page cannot post something else.
+    stray = wanted - allowed
+    if stray:
+        raise LedgerError("Some of those lines are no longer similar or no longer in review; refresh and try again.")
+
+    first = post_line(txn_id, {"account_id": account_id, "remember": data.get("remember", True)})
+    posted, refused = [first["entry_id"]], []
+    for other_id in sorted(wanted):
+        try:
+            with SessionLocal.begin() as session:
+                other = _txn(session, other_id, lock=True)
+                posted.append(_post(session, other, {"account_id": account_id})["entry_id"])
+        except LedgerError as e:
+            refused.append({"txn_id": other_id, "error": str(e)})
+    return {"posted": len(posted), "entry_ids": posted, "refused": refused, "remembered": first["remembered"]}
+
+
 def refresh_suggestions() -> dict:
     return suggest.run_now()
 

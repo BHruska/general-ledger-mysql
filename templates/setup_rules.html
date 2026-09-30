@@ -258,8 +258,7 @@ Description: Setup -> Rules. "Description contains X -> account Y", in priority 
             const [{ accounts }, { payees }, { accounts: feeds }] = await Promise.all([
                 api('/api/accounts'), api('/api/payees?view=active'), api('/api/banking/accounts')]);
             document.getElementById('rAccount').innerHTML = '<option value="">Choose an account...</option>' +
-                accounts.filter((a) => a.postable && !a.is_bank_account).map((a) =>
-                    `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+                accountOptionsHtml(accounts, { excludeBank: true });
             enhanceAccountSelect(document.getElementById('rAccount'));
             document.getElementById('payeeList').innerHTML = payees.map((p) => `<option value="${escapeHtml(p.name)}">`).join('');
             payeeIds = Object.fromEntries(payees.map((p) => [p.name.toLowerCase(), p.id]));

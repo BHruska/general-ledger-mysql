@@ -130,6 +130,18 @@ def unpost_line(txn_id):
     return bank_queue.unpost(txn_id)
 
 
+@banking_bp.route("/api/banking/lines/<int:txn_id>/similar", methods=["GET"])
+@envelope
+def similar_lines(txn_id):
+    return bank_queue.similar_lines(txn_id)
+
+
+@banking_bp.route("/api/banking/lines/<int:txn_id>/post-with-similar", methods=["POST"])
+@envelope
+def post_with_similar(txn_id):
+    return bank_queue.post_with_similar(txn_id, body())
+
+
 @banking_bp.route("/api/banking/suggest", methods=["POST"])
 @envelope
 def refresh_suggestions():

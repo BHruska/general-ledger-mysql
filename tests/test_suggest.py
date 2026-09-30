@@ -203,6 +203,45 @@ def test_excluding_one_side_leaves_the_other_waiting(chart, feeds):
     assert line("Payment Thank You").suggestion_reason == "TRANSFER_WAITING"
 
 
+# ------------------------------------------------------------------ similar lines
+
+def test_similar_lines_and_post_them_together(chart, feeds):
+    file_import.import_file(feeds["card"], CARD_CSV, None)
+    coffees = sorted(t["id"] for t in bank_queue.list_lines("review")["lines"] if t["description"] == "COFFEE SHOP")
+    similar = bank_queue.similar_lines(coffees[0])
+    assert similar["keyword"] == "COFFEE SHOP" and [l["id"] for l in similar["lines"]] == [coffees[1]]
+    r = bank_queue.post_with_similar(coffees[0], {"account_id": chart["6300"], "line_ids": [coffees[1]]})
+    assert (r["posted"], r["refused"], r["remembered"]["pattern"]) == (2, [], "COFFEE SHOP")
+    with db.SessionLocal() as session:
+        assert {session.get(BankTxn, i).status for i in coffees} == {"POSTED"}
+        assert len(session.scalars(select(PayeeRule)).all()) == 1
+
+
+def test_post_with_similar_refuses_lines_that_are_not_similar(chart, feeds):
+    file_import.import_file(feeds["card"], CARD_CSV, None)
+    coffee = line("COFFEE SHOP").id
+    with pytest.raises(LedgerError, match="no longer similar"):
+        bank_queue.post_with_similar(coffee, {"account_id": chart["6300"], "line_ids": [line("EXAMPLE HOSTING").id]})
+    assert line("EXAMPLE HOSTING").status == "NEW"
+
+
+def test_transfers_are_never_similar(chart, feeds):
+    file_import.import_file(feeds["card"], CARD_CSV, None)
+    later = CARD_CSV.replace("Memo\n", "Memo\n09/29/2026,09/29/2026,Payment Thank You-Mobile,,Payment,50.00,\n", 1)
+    file_import.import_file(feeds["card"], later, None)
+    assert bank_queue.similar_lines(line("Payment Thank You").id)["lines"] == []
+
+
+def test_similar_api(signed_in, chart, feeds):
+    signed_in.post("/api/banking/import", json={"bank_account_id": feeds["card"], "content": CARD_CSV})
+    coffee = line("COFFEE SHOP").id
+    data = signed_in.get(f"/api/banking/lines/{coffee}/similar").get_json()
+    assert data["success"] and len(data["lines"]) == 1
+    r = signed_in.post(f"/api/banking/lines/{coffee}/post-with-similar",
+                       json={"account_id": chart["6300"], "line_ids": [data["lines"][0]["id"]]}).get_json()
+    assert r["posted"] == 2
+
+
 # ------------------------------------------------------------------ rule management
 
 def test_rule_validation(chart, feeds):
