@@ -10,6 +10,13 @@ this project (it is not a synced copy from `_standards`). The build order itself
 | --- | --- | --- |
 | Keyboard shortcuts on Banking → Review | DESIGN.md §12.3 | `j`/`k` to move, `Enter` post, `e` exclude, `s` split. Deferred 2026-09-30. |
 
+## Ideas to investigate
+
+| Item | Notes |
+| --- | --- |
+| Check images for paper checks | "CHECK 1028" names no payee, so the owner looks it up on chase.com. As far as known, Plaid's Transactions product returns no check images; confirm with Plaid's docs, else options are a manual upload (the receipts button already takes images) or Chase's own export. Owner's idea, 2026-09-30. |
+| Choose a payee when posting | Checks and anonymous deposits could then carry a payee (and update its last-used date) even though their text never will. |
+
 ## Worth doing
 
 | Item | Why |

@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.4.3
+General Ledger v0.4.4
 File: templates/banking_review.html
 Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3). Each
              line arrives with a suggestion (rule, payee, history or transfer) already
@@ -22,6 +22,7 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     select.post-to { min-width: 240px; }
     tr.has-changes td { background: #fff8e1; }
     td.why { font-size: 12px; }
+    small.check-note { display: block; color: var(--text-muted); max-width: 300px; white-space: normal; }
     label.remember { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: normal; }
     #splitTable input, #splitTable select { width: 100%; }
     tr.similar-bar td { padding-top: 0; }
@@ -170,8 +171,10 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         return `<tr data-id="${l.id}">${common}
             <td><select class="post-to" id="postTo${l.id}" onchange="accountChanged(${l.id})">
                     <option value="">Choose an account...</option>${accountOptions}</select>
-                <br><label class="remember" title="Next time, the same bank text suggests this account">
-                    <input type="checkbox" id="remember${l.id}"> Remember</label></td>
+                ${l.anonymous
+                    ? '<br><small class="check-note">Check: the payee is not in the bank text; see the check image on chase.com. Nothing is remembered.</small>'
+                    : `<br><label class="remember" title="Next time, the same bank text suggests this account">
+                        <input type="checkbox" id="remember${l.id}"> Remember</label>`}</td>
             <td class="why">${why(l)}</td>
             <td>
                 <button class="btn small" onclick="postLine(${l.id}, this)">Post</button>
@@ -208,7 +211,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         const line = lines.find((l) => l.id === id);
         const value = document.getElementById(`postTo${id}`).value;
         const changed = value !== (line.suggested_account_id === null ? '' : String(line.suggested_account_id));
-        document.getElementById(`remember${id}`).checked = changed && value !== '';
+        const remember = document.getElementById(`remember${id}`);
+        if (remember) remember.checked = changed && value !== '';  // checks have no Remember
         document.querySelector(`tr[data-id="${id}"]`).classList.toggle('has-changes', changed);
         showSimilar(id);
     }
@@ -220,7 +224,7 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         const bar = () => document.getElementById(`similar${id}`);
         if (bar()) bar().remove();
         const sel = document.getElementById(`postTo${id}`);
-        if (!sel.value) return;
+        if (!sel.value || lines.find((l) => l.id === id).anonymous) return;  // checks are never "similar"
         const chosen = sel.value;
         try {
             const r = await api(`/api/banking/lines/${id}/similar`);
@@ -304,7 +308,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     async function postLine(id, button) {
         const accountId = document.getElementById(`postTo${id}`).value;
         if (!accountId) { showWarning('Choose an account to post to first.'); return; }
-        const remember = document.getElementById(`remember${id}`).checked;
+        const rememberBox = document.getElementById(`remember${id}`);
+        const remember = rememberBox ? rememberBox.checked : false;
         const done = setBusy(button, 'Posting...');
         try {
             const r = await api(`/api/banking/lines/${id}/post`, {

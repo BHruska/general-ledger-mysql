@@ -203,6 +203,43 @@ def test_excluding_one_side_leaves_the_other_waiting(chart, feeds):
     assert line("Payment Thank You").suggestion_reason == "TRANSFER_WAITING"
 
 
+# ------------------------------------------------------------------ checks name no payee
+
+@pytest.mark.parametrize("description, category, anonymous", [
+    ("CHECK 1028", "CHECK_PAID", True),
+    ("CHECK 1028  ", "", True),                        # text alone is enough
+    ("REMOTE ONLINE DEPOSIT # 1", "CHECK_DEPOSIT", True),
+    ("REMOTE ONLINE DEPOSIT # 1", "", True),
+    ("CHECKFREE PAYMENT", "", False),                  # a merchant that starts with "CHECK"
+    ("ORIG CO NAME:INTUIT ORIG ID:1 CO ENTRY DESCR:DEPOSIT", "ACH_CREDIT", False),
+])
+def test_is_anonymous(description, category, anonymous):
+    assert suggest.is_anonymous(BankTxn(description=description, provider_category=category)) is anonymous
+
+
+def test_a_check_is_never_remembered_grouped_or_learned(chart, feeds):
+    two_checks = CHECKING_CSV.replace(
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n",
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+        "CHECK,09/25/2026,\"CHECK 1030  \",-30.00,CHECK_PAID,9000.00,1030,\n", 1)
+    file_import.import_file(feeds["checking"], two_checks, None)
+    first, second = line("CHECK 1029"), line("CHECK 1030")
+    assert bank_queue.similar_lines(first.id)["lines"] == []
+    assert next(l for l in bank_queue.list_lines("review")["lines"] if l["id"] == first.id)["anonymous"]
+    r = bank_queue.post_line(first.id, {"account_id": chart["6300"], "remember": True})
+    assert r["remembered"] is None
+    with db.SessionLocal() as session:
+        assert session.scalars(select(PayeeRule)).all() == []
+    # Posting a check taught history nothing: the next check gets no suggestion.
+    assert line("CHECK 1030").suggestion_reason is None and line("CHECK 1030").status == "NEW"
+
+
+def test_a_rule_the_owner_writes_still_applies_to_a_check(chart, feeds):
+    rules.create_rule({"pattern": "CHECK 1029", "match_type": "EQUALS", "account_id": chart["6300"]})
+    file_import.import_file(feeds["checking"], CHECKING_CSV, None)
+    assert line("CHECK 1029").suggested_account_id == chart["6300"]
+
+
 # ------------------------------------------------------------------ similar lines
 
 def test_similar_lines_and_post_them_together(chart, feeds):

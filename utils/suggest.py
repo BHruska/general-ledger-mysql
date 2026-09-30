@@ -76,6 +76,19 @@ def rule_matches(rule: PayeeRule, txn: BankTxn) -> bool:
     return re.search(r"(?<![0-9a-z])" + re.escape(p) + r"(?![0-9a-z])", s) is not None
 
 
+# Lines whose bank text names no payee: a paper check ("CHECK 1028") or a check deposit
+# ("REMOTE ONLINE DEPOSIT # 1"). Learning from their text would teach "every check is
+# Sales Tax", so they are never remembered, never grouped as similar, never learned from
+# history and never suggested from it. Chase's CSV types them; the text is the fallback.
+ANONYMOUS_CATEGORIES = {"CHECK_PAID", "CHECK_DEPOSIT"}
+_ANONYMOUS_TEXT = re.compile(r"^\s*(check|chk|remote online deposit|deposit)\b[\s#:]*\d*\s*$", re.IGNORECASE)
+
+
+def is_anonymous(txn) -> bool:
+    return ((txn.provider_category or "").strip().upper() in ANONYMOUS_CATEGORIES
+            or bool(_ANONYMOUS_TEXT.match(txn.description or "")))
+
+
 def looks_like_card_payment(txn: BankTxn) -> bool:
     if (txn.provider_category or "").strip().lower() == "payment":
         return True  # the Chase card CSV's own Type for a payment
@@ -114,14 +127,14 @@ class Suggester:
     def _history(self, since: date) -> dict[str, Counter]:
         bank_gl = set(self.session.scalars(select(BankAccount.gl_account_id)))
         rows = self.session.execute(
-            select(BankTxn.description, JournalLine.account_id)
+            select(BankTxn, JournalLine.account_id)
             .join(JournalLine, JournalLine.entry_id == BankTxn.entry_id)
             .where(BankTxn.status == "POSTED", BankTxn.posted_date >= since)
         ).all()
         history: dict[str, Counter] = defaultdict(Counter)
-        for description, account_id in rows:
-            if account_id not in bank_gl:
-                history[history_key(description)][account_id] += 1
+        for txn, account_id in rows:
+            if account_id not in bank_gl and not is_anonymous(txn):
+                history[history_key(txn.description)][account_id] += 1
         return history
 
     def _usable(self, account_id: int | None) -> int | None:
@@ -136,6 +149,8 @@ class Suggester:
             if rule.action == "EXCLUDE":
                 return Suggestion("RULE_EXCLUDE", rule_id=rule.id, payee_id=rule.payee_id)
             return Suggestion("RULE", self._usable(rule.account_id), rule.payee_id, rule.id)
+        if is_anonymous(txn):
+            return None  # only a rule the owner wrote may speak for a check
         text = normalise(txn.description)
         for _, payee, rx in self.payees:
             if rx.search(text):

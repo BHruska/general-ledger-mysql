@@ -58,6 +58,8 @@ def _serialize(t: BankTxn, ba: BankAccount, ctx: dict) -> dict:
         "entry_id": t.entry_id,
         "posted_to": ctx["offsets"].get(t.entry_id) if t.entry_id else None,
         "attachments": ctx["attachments"].get(t.id, 0),
+        # A check or check deposit: its text names no payee, so nothing is learned from it.
+        "anonymous": suggest.is_anonymous(t),
     }
 
 
@@ -220,7 +222,9 @@ def _post(session, txn: BankTxn, data: dict) -> dict:
     _touch_payee(session, payee_id, txn.posted_date)
 
     remembered = None
-    if data.get("remember") and single:
+    # Never for a check: "CHECK 1028" names no payee, and a rule from it would claim
+    # every future check for this account.
+    if data.get("remember") and single and not suggest.is_anonymous(txn):
         rule = rules.remember(session, txn, chosen, payee_id)
         remembered = {"id": rule.id, "pattern": rule.pattern}
     return {"entry_id": entry.id, "txn_id": txn.id, "remembered": remembered}
@@ -351,6 +355,8 @@ def _similar(session, txn: BankTxn) -> tuple[str, list[BankTxn]]:
     the same keyword (utils/rules.derive_keyword). Transfers are never included -- a card
     payment is posted as a pair, not to an account."""
     keyword = rules.derive_keyword(txn.description)
+    if suggest.is_anonymous(txn):
+        return keyword, []  # two checks are not "the same payee"
     probe = PayeeRule(match_field="DESCRIPTION", match_type="CONTAINS", pattern=keyword,
                       action="SUGGEST", is_active=True)
     others = session.scalars(select(BankTxn).where(
