@@ -1,0 +1,154 @@
+<!--
+General Ledger v0.3.2
+File: templates/reports_bank_transactions.html
+Description: Reports -> Bank Transactions. Every imported bank line in a date range,
+             whatever its status, with a count and totals per status from the server.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% set active_sub = 'bank-transactions' %}
+{% block container_class %} wide{% endblock %}
+
+{% block page_title %}Bank Transactions{% endblock %}
+{% block page_subtitle %}Every imported bank and card line, and what became of it.{% endblock %}
+
+{% block styles %}
+<style>
+    .container.wide { max-width: 1600px; }
+    td.desc { max-width: 460px; }
+    td.desc small { display: block; color: var(--text-faint); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="startDate">From</label>
+            <input type="date" id="startDate">
+        </div>
+        <div class="form-group">
+            <label for="endDate">To</label>
+            <input type="date" id="endDate">
+        </div>
+        <div class="form-group">
+            <label for="accountFilter">Account</label>
+            <select id="accountFilter"><option value="">All accounts</option></select>
+        </div>
+        <div class="form-group">
+            <label for="statusFilter">Status</label>
+            <select id="statusFilter">
+                <option value="">All</option><option value="NEW">To review</option>
+                <option value="POSTED">Posted</option><option value="EXCLUDED">Excluded</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn" id="runBtn" onclick="runReport()">Run</button>
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <a class="btn secondary" id="csvLink" href="/api/reports/bank-transactions.csv">Download CSV</a>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="stat-grid" id="summary"></div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2 id="btTitle">Lines</h2>
+        <div class="section-actions"><span class="status-line" id="btStatus"></span></div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr>
+                <th>Date</th><th>Account</th><th>Description</th><th class="num">Amount</th>
+                <th>Status</th><th>Posted to / reason</th>
+            </tr></thead>
+            <tbody id="btBody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const STATUS_CHIP = { NEW: 'info', SUGGESTED: 'info', POSTED: 'success', EXCLUDED: 'warning', REMOVED: '' };
+    const STATUS_LABEL = { NEW: 'To review', SUGGESTED: 'Suggested', POSTED: 'Posted', EXCLUDED: 'Excluded', REMOVED: 'Removed' };
+
+    function params() {
+        const p = new URLSearchParams();
+        for (const [key, id] of [['start', 'startDate'], ['end', 'endDate'],
+                                 ['bank_account_id', 'accountFilter'], ['status', 'statusFilter']]) {
+            const v = document.getElementById(id).value;
+            if (v) p.set(key, v);
+        }
+        return p;
+    }
+
+    async function runReport() {
+        const body = document.getElementById('btBody');
+        const status = document.getElementById('btStatus');
+        const done = setBusy(document.getElementById('runBtn'), 'Running...');
+        status.textContent = 'Running...';
+        try {
+            const r = (await api('/api/reports/bank-transactions?' + params())).report;
+            document.getElementById('startDate').value = r.start;
+            document.getElementById('endDate').value = r.end;
+            document.getElementById('csvLink').href = '/api/reports/bank-transactions.csv?' + params();
+            document.getElementById('btTitle').textContent = `Lines ${r.start} to ${r.end}`;
+
+            const order = ['NEW', 'SUGGESTED', 'POSTED', 'EXCLUDED', 'REMOVED'].filter((s) => r.summary[s]);
+            document.getElementById('summary').innerHTML = order.length ? order.map((s) => `
+                <div class="stat-card">
+                    <div class="value">${r.summary[s].count}</div>
+                    <div class="label">${STATUS_LABEL[s]}</div>
+                    <small>in ${formatMoney(r.summary[s].money_in)} · out ${formatMoney(r.summary[s].money_out)}</small>
+                </div>`).join('')
+                : '<div class="empty-state">No bank lines in this range.</div>';
+
+            if (!r.rows.length) {
+                tableMessage(body, 6, 'No lines match.');
+            } else {
+                body.innerHTML = r.rows.map((x) => {
+                    const detail = x.status === 'POSTED'
+                        ? `${x.posted_to === null ? '—' : escapeHtml(x.posted_to)} <small>#${x.entry_id}</small>`
+                        : (x.status === 'EXCLUDED' ? escapeHtml(x.excluded_reason ?? '') : '');
+                    return `<tr>
+                        <td>${escapeHtml(x.posted_date)}</td>
+                        <td>${escapeHtml(x.bank_account)}</td>
+                        <td class="desc">${escapeHtml(x.description)}${x.provider_category ? `<small>${escapeHtml(x.provider_category)}</small>` : ''}</td>
+                        <td class="num ${signClass(x.amount)}">${formatMoney(x.amount)}</td>
+                        <td><span class="chip ${STATUS_CHIP[x.status] ?? ''}">${escapeHtml(STATUS_LABEL[x.status] ?? x.status)}</span></td>
+                        <td>${detail}</td>
+                    </tr>`;
+                }).join('');
+            }
+            status.textContent = `${r.rows.length} line(s) · updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Run failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 6, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    async function init() {
+        try {
+            const { accounts } = await api('/api/banking/accounts');
+            document.getElementById('accountFilter').innerHTML = '<option value="">All accounts</option>' +
+                accounts.map((a) => `<option value="${a.id}">${escapeHtml(a.name)}${a.mask ? ` ··${escapeHtml(a.mask)}` : ''}</option>`).join('');
+        } catch (e) {
+            showError(e.message);
+        }
+        runReport();
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - reports_bank_transactions.html -->

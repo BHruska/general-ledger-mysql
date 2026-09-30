@@ -30,6 +30,10 @@ Description: Reports -> Trial Balance. Every account's balance at a date as a de
             <label>&nbsp;</label>
             <button class="btn" id="runBtn" onclick="runReport()">Run</button>
         </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <a class="btn secondary" id="csvLink" href="/api/reports/trial-balance.csv">Download CSV</a>
+        </div>
     </div>
 </div>
 
@@ -62,6 +66,7 @@ Description: Reports -> Trial Balance. Every account's balance at a date as a de
             const asOf = document.getElementById('asOf').value;
             const { report: r } = await api('/api/reports/trial-balance' + (asOf ? `?as_of=${asOf}` : ''));
             document.getElementById('asOf').value = r.as_of;
+            document.getElementById('csvLink').href = `/api/reports/trial-balance.csv?as_of=${r.as_of}`;
             document.getElementById('tbTitle').textContent = `Trial Balance at ${r.as_of}`;
             const rows = r.rows.map((row) => {
                 const cls = row.is_header ? 'header-acct' : (row.parent_id !== null ? 'sub-acct' : '');

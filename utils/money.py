@@ -66,7 +66,13 @@ def parse_optional_date(value, what: str = "date") -> date | None:
 
 
 def to_str(amount: Decimal | None) -> str | None:
-    """The API's representation. None stays None: an absent figure is an em dash."""
-    return None if amount is None else str(amount.quantize(CENT))
+    """The API's representation. None stays None: an absent figure is an em dash.
+
+    Decimal keeps the sign of zero, so a zero balance flipped into a credit account's
+    normal direction is Decimal('-0.00'); it must never reach a page as "-$0.00".
+    """
+    if amount is None:
+        return None
+    return str(ZERO if amount == 0 else amount.quantize(CENT))
 
 """ EOF - money.py """

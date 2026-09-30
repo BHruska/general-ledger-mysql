@@ -80,6 +80,8 @@ SUB_MENUS = {
     ],
     "reports": [
         {"key": "trial-balance", "label": "Trial Balance", "url": "/reports/trial-balance"},
+        {"key": "accounts", "label": "Account List", "url": "/reports/accounts"},
+        {"key": "bank-transactions", "label": "Bank Transactions", "url": "/reports/bank-transactions"},
     ],
     "setup": [
         {"key": "accounts", "label": "Accounts", "url": "/setup/accounts"},

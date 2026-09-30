@@ -1,0 +1,141 @@
+<!--
+General Ledger v0.3.2
+File: templates/reports_account_list.html
+Description: Reports -> Account List. The whole chart with each account's balance at a
+             date, in the account's normal direction. Filters only hide rows; every
+             figure comes from the server.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% set active_sub = 'accounts' %}
+
+{% block page_title %}Account List{% endblock %}
+{% block page_subtitle %}The chart of accounts, with each account's balance at a date.{% endblock %}
+
+{% block styles %}
+<style>
+    tr.sub-acct td:nth-child(2) { padding-left: 24px; }
+    tr.header-acct td { font-weight: 600; }
+    tr.inactive td { color: var(--text-faint); }
+    td.desc { color: var(--text-muted); max-width: 360px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="asOf">Balances as of</label>
+            <input type="date" id="asOf">
+        </div>
+        <div class="form-group">
+            <label for="search">Find</label>
+            <input type="text" id="search" placeholder="Name or number" oninput="render()">
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn" id="runBtn" onclick="runReport()">Run</button>
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <a class="btn secondary" id="csvLink" href="/api/reports/account-list.csv">Download CSV</a>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <div class="section-actions">
+            <div class="segmented" id="typeFilter">
+                <button data-type="" class="active" onclick="setType('')">All</button>
+                <button data-type="ASSET" onclick="setType('ASSET')">Assets</button>
+                <button data-type="LIABILITY" onclick="setType('LIABILITY')">Liabilities</button>
+                <button data-type="EQUITY" onclick="setType('EQUITY')">Equity</button>
+                <button data-type="INCOME" onclick="setType('INCOME')">Income</button>
+                <button data-type="EXPENSE" onclick="setType('EXPENSE')">Expenses</button>
+            </div>
+            <label class="toggle-label"><input type="checkbox" id="hideInactive" onchange="render()"> Hide inactive</label>
+        </div>
+        <div class="section-actions"><span class="status-line" id="alStatus"></span></div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr>
+                <th>Number</th><th>Account</th><th>Type</th><th></th><th>Description</th><th class="num">Balance</th>
+            </tr></thead>
+            <tbody id="alBody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+    <p class="note">Balances are in each account's normal direction: what you have for assets, what you
+        owe for liabilities, earned for income, spent for expenses. Income and expense show the fiscal
+        year to date; header rows are the sum of their sub-accounts.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let report = null;
+    let typeFilter = '';
+
+    function setType(t) {
+        typeFilter = t;
+        document.querySelectorAll('#typeFilter button').forEach((b) => b.classList.toggle('active', b.dataset.type === t));
+        render();
+    }
+
+    function render() {
+        if (!report) return;
+        const q = document.getElementById('search').value.trim().toLowerCase();
+        const hideInactive = document.getElementById('hideInactive').checked;
+        const rows = report.rows.filter((r) =>
+            (!typeFilter || r.type === typeFilter) && (!hideInactive || r.is_active)
+            && (!q || r.number.includes(q) || r.full_name.toLowerCase().includes(q)));
+        const body = document.getElementById('alBody');
+        if (!rows.length) { tableMessage(body, 6, 'No accounts match.'); return; }
+        body.innerHTML = rows.map((r) => {
+            const chips = [
+                r.is_header ? '<span class="chip">HEADER</span>' : '',
+                r.feed ? `<span class="chip info">FEED: ${escapeHtml(r.feed)}</span>`
+                       : (r.is_bank_account ? '<span class="chip info">BANK</span>' : ''),
+                r.is_active ? '' : '<span class="chip warning">INACTIVE</span>',
+            ].join(' ');
+            const cls = [r.parent_number !== null ? 'sub-acct' : '', r.is_header ? 'header-acct' : '',
+                         r.is_active ? '' : 'inactive'].join(' ');
+            const name = r.is_header ? escapeHtml(r.name)
+                : `<a href="/journal/registers?account=${r.account_id}">${escapeHtml(r.name)}</a>`;
+            return `<tr class="${cls}">
+                <td>${escapeHtml(r.number)}</td><td>${name}</td><td>${escapeHtml(r.type)}</td>
+                <td>${chips}</td><td class="desc">${r.description === null ? '' : escapeHtml(r.description)}</td>
+                <td class="num">${formatMoney(r.balance)}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    async function runReport() {
+        const status = document.getElementById('alStatus');
+        const done = setBusy(document.getElementById('runBtn'), 'Running...');
+        status.textContent = 'Running...';
+        try {
+            const asOf = document.getElementById('asOf').value;
+            const qs = asOf ? `?as_of=${asOf}` : '';
+            report = (await api('/api/reports/account-list' + qs)).report;
+            document.getElementById('asOf').value = report.as_of;
+            document.getElementById('csvLink').href = `/api/reports/account-list.csv?as_of=${report.as_of}`;
+            render();
+            const c = report.counts;
+            status.textContent = `${report.rows.length} accounts (${c.ASSET} asset, ${c.LIABILITY} liability, `
+                + `${c.EQUITY} equity, ${c.INCOME} income, ${c.EXPENSE} expense; ${report.inactive} inactive)`;
+        } catch (e) {
+            status.textContent = `Run failed: ${e.message}`;
+            const body = document.getElementById('alBody');
+            if (body.querySelector('td.empty')) tableMessage(body, 6, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', runReport);
+</script>
+{% endblock %}
+
+<!-- EOF - reports_account_list.html -->
