@@ -5,10 +5,10 @@ Description: Setup pages (Accounts, Settings) and their JSON API. Payees, Rules 
              Health join the sub-menu with phases 2 and 6.
 """
 
-from flask import Blueprint, redirect, render_template
+from flask import Blueprint, redirect, render_template, request
 
 from routes.api import body, envelope
-from utils import accounts, settings_manager
+from utils import accounts, payees, settings_manager
 
 setup_bp = Blueprint("setup", __name__)
 
@@ -51,6 +51,29 @@ def update_account(account_id):
 def delete_account(account_id):
     accounts.delete_account(account_id)
     return {}
+
+
+@setup_bp.route("/setup/payees")
+def payees_page():
+    return render_template("setup_payees.html")
+
+
+@setup_bp.route("/api/payees", methods=["GET"])
+@envelope
+def list_payees():
+    return payees.list_payees(request.args.get("view", "active"))
+
+
+@setup_bp.route("/api/payees/<int:payee_id>", methods=["PATCH"])
+@envelope
+def update_payee(payee_id):
+    return {"payee": payees.update_payee(payee_id, body())}
+
+
+@setup_bp.route("/api/payees/archive-unused", methods=["POST"])
+@envelope
+def archive_unused():
+    return payees.archive_unused(body())
 
 
 @setup_bp.route("/api/settings", methods=["GET"])

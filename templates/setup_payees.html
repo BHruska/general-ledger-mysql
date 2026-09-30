@@ -1,0 +1,229 @@
+<!--
+General Ledger v0.3.3
+File: templates/setup_payees.html
+Description: Setup -> Payees. Vendors and customers, with the default account a posting
+             to them suggests. Archived payees keep their history but stay out of the way.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'setup' %}
+{% set active_sub = 'payees' %}
+
+{% block page_title %}Payees{% endblock %}
+{% block page_subtitle %}Vendors and customers, and the account each one usually posts to.{% endblock %}
+
+{% block styles %}
+<style>
+    tr.archived td { color: var(--text-faint); }
+    .check-row { display: flex; gap: 20px; margin-bottom: 15px; flex-wrap: wrap; }
+    .check-row label { display: flex; align-items: center; gap: 6px; font-weight: normal; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2>Archive unused payees</h2>
+    </div>
+    <div class="info-box">
+        Archived payees keep their history (and come back in reports) but are hidden from pickers and
+        never suggested. This archives every active payee not used since the date you choose; reactivate
+        any one below.
+    </div>
+    <div class="controls-grid">
+        <div class="form-group">
+            <label for="archiveBefore">Not used since</label>
+            <input type="date" id="archiveBefore" value="2024-01-01">
+        </div>
+        <div class="form-group">
+            <label>&nbsp;</label>
+            <button class="btn secondary" id="archiveBtn" onclick="archiveUnused()">Archive unused</button>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <div class="section-actions">
+            <div class="segmented" id="viewFilter">
+                <button data-view="active" class="active" onclick="setView('active')">Active <span id="cActive"></span></button>
+                <button data-view="archived" onclick="setView('archived')">Archived <span id="cArchived"></span></button>
+                <button data-view="all" onclick="setView('all')">All</button>
+            </div>
+            <input type="text" id="search" placeholder="Find a payee" oninput="render()">
+        </div>
+        <div class="section-actions"><span class="status-line" id="payeeStatus"></span></div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr><th>Name</th><th></th><th>Default account</th><th>Last used</th><th></th></tr></thead>
+            <tbody id="payeeBody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div class="modal-overlay" id="payeeModal">
+    <div class="modal">
+        <h3 id="payeeTitle">Edit payee</h3>
+        <div class="form-group">
+            <label for="payeeName">Name</label>
+            <input type="text" id="payeeName" maxlength="120">
+        </div>
+        <div class="form-group">
+            <label for="payeeDefault">Default account</label>
+            <select id="payeeDefault"></select>
+            <small>What a bank line for this payee is suggested to post to.</small>
+        </div>
+        <div class="check-row">
+            <label><input type="checkbox" id="payeeVendor"> Vendor</label>
+            <label><input type="checkbox" id="payeeCustomer"> Customer</label>
+            <label><input type="checkbox" id="payee1099"> 1099 vendor</label>
+            <label><input type="checkbox" id="payeeActive"> Active</label>
+        </div>
+        <div class="alert alert-error" id="payeeError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('payeeModal')">Cancel</button>
+            <button class="btn success" id="payeeSaveBtn" onclick="savePayee()">Save</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let view = 'active';
+    let payees = [];
+    let accountOptions = '';
+    let editingId = null;
+
+    function setView(v) {
+        view = v;
+        document.querySelectorAll('#viewFilter button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+        load();
+    }
+
+    function render() {
+        const q = document.getElementById('search').value.trim().toLowerCase();
+        const rows = payees.filter((p) => !q || p.name.toLowerCase().includes(q));
+        const body = document.getElementById('payeeBody');
+        if (!rows.length) { tableMessage(body, 5, q ? 'No payee matches.' : 'No payees here.'); return; }
+        body.innerHTML = rows.map((p) => {
+            const chips = [
+                p.is_vendor ? '<span class="chip">VENDOR</span>' : '',
+                p.is_customer ? '<span class="chip info">CUSTOMER</span>' : '',
+                p.is_1099_vendor ? '<span class="chip warning">1099</span>' : '',
+                p.is_active ? '' : '<span class="chip">ARCHIVED</span>',
+            ].join(' ');
+            return `<tr class="${p.is_active ? '' : 'archived'}">
+                <td><strong>${escapeHtml(p.name)}</strong></td>
+                <td>${chips}</td>
+                <td>${p.default_account === null ? '—' : escapeHtml(p.default_account)}</td>
+                <td>${p.last_used_on === null ? 'never' : escapeHtml(p.last_used_on)}</td>
+                <td>
+                    <button class="btn small secondary" onclick="openPayee(${p.id})">Edit</button>
+                    <button class="btn small secondary" onclick="setActive(${p.id}, ${!p.is_active}, this)">${p.is_active ? 'Archive' : 'Reactivate'}</button>
+                </td>
+            </tr>`;
+        }).join('');
+    }
+
+    async function load() {
+        const status = document.getElementById('payeeStatus');
+        status.textContent = 'Loading...';
+        try {
+            const data = await api(`/api/payees?view=${view}`);
+            payees = data.payees;
+            document.getElementById('cActive').textContent = `(${data.counts.active})`;
+            document.getElementById('cArchived').textContent = `(${data.counts.archived})`;
+            render();
+            status.textContent = `${payees.length} payee(s)`;
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+            const body = document.getElementById('payeeBody');
+            if (body.querySelector('td.empty')) tableMessage(body, 5, e.message, true);
+        }
+    }
+
+    function openPayee(id) {
+        editingId = id;
+        const p = payees.find((x) => x.id === id);
+        document.getElementById('payeeTitle').textContent = `Edit ${p.name}`;
+        document.getElementById('payeeName').value = p.name;
+        document.getElementById('payeeDefault').innerHTML = '<option value="">None</option>' + accountOptions;
+        document.getElementById('payeeDefault').value = p.default_account_id === null ? '' : String(p.default_account_id);
+        document.getElementById('payeeVendor').checked = p.is_vendor;
+        document.getElementById('payeeCustomer').checked = p.is_customer;
+        document.getElementById('payee1099').checked = p.is_1099_vendor;
+        document.getElementById('payeeActive').checked = p.is_active;
+        document.getElementById('payeeError').hidden = true;
+        openModal('payeeModal');
+    }
+
+    async function savePayee() {
+        const errorEl = document.getElementById('payeeError');
+        const done = setBusy(document.getElementById('payeeSaveBtn'), 'Saving...');
+        const def = document.getElementById('payeeDefault').value;
+        try {
+            await api(`/api/payees/${editingId}`, { method: 'PATCH', body: {
+                name: document.getElementById('payeeName').value,
+                default_account_id: def ? Number(def) : null,
+                is_vendor: document.getElementById('payeeVendor').checked,
+                is_customer: document.getElementById('payeeCustomer').checked,
+                is_1099_vendor: document.getElementById('payee1099').checked,
+                is_active: document.getElementById('payeeActive').checked,
+            } });
+            closeModal('payeeModal');
+            showSuccess('Payee saved.');
+            load();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function setActive(id, active, button) {
+        const done = setBusy(button, active ? 'Reactivating...' : 'Archiving...');
+        try {
+            await api(`/api/payees/${id}`, { method: 'PATCH', body: { is_active: active } });
+            load();
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    async function archiveUnused() {
+        const before = document.getElementById('archiveBefore').value;
+        if (!before) { showWarning('Choose a date first.'); return; }
+        if (!confirm(`Archive every active payee not used since ${before}? Their history stays; they are only hidden.`)) return;
+        const done = setBusy(document.getElementById('archiveBtn'), 'Archiving...');
+        try {
+            const r = await api('/api/payees/archive-unused', { method: 'POST', body: { before } });
+            showSuccess(`Archived ${r.archived} payee(s).`);
+            load();
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            done();
+        }
+    }
+
+    async function init() {
+        try {
+            const { accounts } = await api('/api/accounts');
+            accountOptions = accounts.filter((a) => a.postable && !a.is_bank_account).map((a) =>
+                `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+        } catch (e) {
+            showError(e.message);
+        }
+        load();
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - setup_payees.html -->

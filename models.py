@@ -74,7 +74,7 @@ class Account(Base):
 
 
 class Payee(Base):
-    """Vendors and customers share one table. No UI until phase 2."""
+    """Vendors and customers share one table. Inactive payees are kept but hidden."""
 
     __tablename__ = "payee"
 
@@ -89,6 +89,8 @@ class Payee(Base):
     tax_id_ref: Mapped[str | None] = mapped_column(String(60), nullable=True)
     payment_terms_days: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # When this payee was last on a posting; archiving keys off it.
+    last_used_on: Mapped[date | None] = mapped_column(Date, nullable=True)
 
 
 class JournalEntry(Base):

@@ -77,6 +77,39 @@ def cmd_import_qbo_chart(args) -> int:
     return 0
 
 
+def cmd_import_qbo_payees(args) -> int:
+    from datetime import date
+
+    from utils.errors import LedgerError
+    from utils.migration import qbo_payees
+
+    try:
+        vendors, txns = _read(args.vendors), _read(args.transactions)
+        since = date.fromisoformat(args.active_since)
+        if not args.apply:
+            planned, s = qbo_payees.plan(vendors, txns, since)
+            print(f"{s['payees']} payees: {s['active']} active (used since {s['active_since']}), "
+                  f"{s['archived']} archived ({s['never_used']} never on a transaction).")
+            print(f"{s['vendors']} vendors, {s['customers']} customers; "
+                  f"{s['with_default_account']} get a default account from history.")
+            if s["unmapped_defaults"]:
+                print(f"No default for these consistent-but-unknown accounts: {s['unmapped_defaults']}")
+            print(f"\nActive payees:\n{'Last used':<12}{'Lines':>6}  {'Name':<42}Default account")
+            for p in sorted((p for p in planned if p.is_active), key=lambda p: p.last_used, reverse=True):
+                kind = ("V" if p.is_vendor else "") + ("C" if p.is_customer else "")
+                print(f"{p.last_used.isoformat():<12}{p.lines:>6}  {(p.name + ' [' + kind + ']')[:40]:<42}"
+                      f"{p.default_account or '-'}")
+            print("\nNothing written. Re-run with --apply to import.")
+            return 0
+        s = qbo_payees.apply(vendors, txns, since, replace=args.replace)
+    except (LedgerError, OSError, ValueError) as e:
+        print(f"Not imported: {e}", file=sys.stderr)
+        return 1
+    print(f"Imported {s['payees']} payees: {s['active']} active, {s['archived']} archived, "
+          f"{s['with_default_account']} with a default account.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="General Ledger administration.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -88,6 +121,15 @@ def main() -> int:
     qbo.add_argument("path", help="the CSV file, or - to read stdin")
     qbo.add_argument("--apply", action="store_true", help="write it; without this, only preview")
     qbo.set_defaults(func=cmd_import_qbo_chart)
+    pay = sub.add_parser("import-qbo-payees",
+                         help="payees from the QBO Vendor Contact List + Transaction Detail by Account CSVs")
+    pay.add_argument("vendors", help="Vendor Contact List CSV")
+    pay.add_argument("transactions", help="Transaction Detail by Account CSV (All Dates)")
+    pay.add_argument("--active-since", default="2024-01-01",
+                     help="payees last used before this are imported archived (default 2024-01-01)")
+    pay.add_argument("--replace", action="store_true", help="replace existing, unreferenced payees")
+    pay.add_argument("--apply", action="store_true", help="write it; without this, only preview")
+    pay.set_defaults(func=cmd_import_qbo_payees)
     args = parser.parse_args()
     return args.func(args)
 
