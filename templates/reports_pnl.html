@@ -1,0 +1,117 @@
+<!--
+General Ledger v0.6.0
+File: templates/reports_pnl.html
+Description: Reports -> Profit & Loss, in QuickBooks' layout, with an optional comparison
+             column. Every figure comes from the server; each account links to its GL detail.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% set active_sub = 'pnl' %}
+
+{% block page_title %}Profit and Loss{% endblock %}
+{% block page_subtitle %}Income and expenses for a period (accrual basis).{% endblock %}
+
+{% block styles %}
+<style>
+    table.statement td:first-child { width: 60%; }
+    tr.sec td { font-weight: 600; padding-top: 14px; }
+    tr.acct td:first-child { padding-left: 22px; }
+    tr.acct.sub td:first-child { padding-left: 44px; }
+    tr.acct.head td:first-child { font-weight: 600; color: var(--text-muted); }
+    tr.subtotal td { font-weight: 600; border-top: 1px solid var(--border); }
+    tr.grand td { font-weight: 700; border-top: 2px solid var(--border); font-size: 14px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group"><label for="startDate">From</label><input type="date" id="startDate"></div>
+        <div class="form-group"><label for="endDate">To</label><input type="date" id="endDate"></div>
+        <div class="form-group">
+            <label for="compare">Compare with</label>
+            <select id="compare">
+                <option value="none">Nothing</option><option value="prior_period">Previous period</option>
+                <option value="prior_year">Same period last year</option>
+            </select>
+        </div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn" id="runBtn" onclick="run()">Run</button></div>
+        <div class="form-group"><label>&nbsp;</label><a class="btn secondary" id="csvLink" href="#">Download CSV</a></div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2 id="title">Profit and Loss</h2>
+        <div class="section-actions"><span class="status-line" id="status"></span></div>
+    </div>
+    <div class="table-wrap">
+        <table class="compact statement">
+            <thead id="head"></thead>
+            <tbody id="body"><tr><td class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let report = null;
+
+    function cells(values) { return values.map((v) => `<td class="num">${formatMoney(v)}</td>`).join(''); }
+
+    function accountRows(sec, colStart, colEnd) {
+        return sec.rows.map((r) => {
+            const cls = ['acct', r.depth ? 'sub' : '', r.is_header ? 'head' : ''].join(' ');
+            const name = `${escapeHtml(r.number)} ${escapeHtml(r.name)}`;
+            const link = r.is_header ? name
+                : `<a href="/reports/gl-detail?account_id=${r.account_id}&start=${colStart}&end=${colEnd}">${name}</a>`;
+            return `<tr class="${cls}"><td>${link}</td>${r.is_header ? r.amounts.map(() => '<td></td>').join('') : cells(r.amounts)}</tr>`;
+        }).join('');
+    }
+
+    function section(sec, r) {
+        const width = r.columns.length;
+        return `<tr class="sec"><td colspan="${width + 1}">${escapeHtml(sec.label)}</td></tr>`
+            + accountRows(sec, r.start, r.end)
+            + `<tr class="subtotal"><td>Total ${escapeHtml(sec.label)}</td>${cells(sec.total)}</tr>`;
+    }
+
+    function line(label, values, cls = 'subtotal') { return `<tr class="${cls}"><td>${label}</td>${cells(values)}</tr>`; }
+
+    async function run() {
+        const status = document.getElementById('status');
+        const done = setBusy(document.getElementById('runBtn'), 'Running...');
+        try {
+            const params = new URLSearchParams({ compare: document.getElementById('compare').value });
+            for (const [k, id] of [['start', 'startDate'], ['end', 'endDate']]) {
+                const v = document.getElementById(id).value;
+                if (v) params.set(k, v);
+            }
+            const r = report = (await api('/api/reports/profit-and-loss?' + params)).report;
+            document.getElementById('startDate').value = r.start;
+            document.getElementById('endDate').value = r.end;
+            params.set('start', r.start); params.set('end', r.end);
+            document.getElementById('csvLink').href = '/api/reports/profit-and-loss.csv?' + params;
+            document.getElementById('title').textContent = `Profit and Loss, ${r.start} to ${r.end}`;
+            document.getElementById('head').innerHTML = '<tr><th></th>'
+                + r.columns.map((c) => `<th class="num">${escapeHtml(c.start)} to ${escapeHtml(c.end)}</th>`).join('') + '</tr>';
+            const s = Object.fromEntries(r.sections.map((x) => [x.key, x]));
+            document.getElementById('body').innerHTML =
+                section(s.income, r) + section(s.cogs, r) + line('Gross Profit', r.gross_profit)
+                + section(s.expenses, r) + line('Net Operating Income', r.net_operating_income)
+                + section(s.other_income, r) + section(s.other_expense, r) + line('Net Other Income', r.net_other_income)
+                + line('Net Income', r.net_income, 'grand');
+            status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Run failed: ${e.message}`;
+        } finally {
+            done();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', run);
+</script>
+{% endblock %}
+
+<!-- EOF - reports_pnl.html -->

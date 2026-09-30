@@ -180,14 +180,21 @@ def delete_rule(rule_id: int) -> None:
 
 
 def remember(session, txn: BankTxn, account_id: int, payee_id: int | None) -> PayeeRule:
-    """"Remember for this payee": one rule per keyword, updated rather than duplicated.
+    """"Remember for this payee": one rule per keyword and bank account, updated rather
+    than duplicated.
+
+    The rule is limited to the bank account the line came from. The same text can mean
+    different things on different accounts: "INTUIT" on the card is the QuickBooks
+    subscription, while "INTUIT ... DEPOSIT" in checking is a customer paying an invoice
+    through QuickBooks Payments -- found in the Q3 rehearsal, where one global rule sent
+    two customer payments to Software Subscriptions.
 
     Does not commit and does not re-run suggestions; the caller does both.
     """
     keyword = derive_keyword(txn.description)
     existing = next((r for r in session.scalars(select(PayeeRule).where(
         PayeeRule.match_field == "DESCRIPTION", PayeeRule.match_type == "CONTAINS",
-        PayeeRule.action == "SUGGEST", PayeeRule.bank_account_id.is_(None)))
+        PayeeRule.action == "SUGGEST", PayeeRule.bank_account_id == txn.bank_account_id))
         if suggest.normalise(r.pattern) == suggest.normalise(keyword)), None)
     if existing:
         existing.account_id = account_id
@@ -197,8 +204,8 @@ def remember(session, txn: BankTxn, account_id: int, payee_id: int | None) -> Pa
                      {"pattern": existing.pattern, "account_id": account_id, "updated": True})
         return existing
     rule = PayeeRule(priority=100, match_field="DESCRIPTION", match_type="CONTAINS", pattern=keyword,
-                     account_id=account_id, payee_id=payee_id, action="SUGGEST", times_applied=0,
-                     is_active=True)
+                     bank_account_id=txn.bank_account_id, account_id=account_id, payee_id=payee_id,
+                     action="SUGGEST", times_applied=0, is_active=True)
     session.add(rule)
     session.flush()
     audit.record(session, "rule.remember", "payee_rule", rule.id,

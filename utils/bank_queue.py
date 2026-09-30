@@ -16,7 +16,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 
 from db import SessionLocal
-from models import Account, BankAccount, BankTxn, Invoice, JournalLine, Payee, PayeeRule, Settings
+from models import Account, BankAccount, BankTxn, Invoice, JournalEntry, JournalLine, Payee, PayeeRule, Settings
 from utils import attachments, audit, invoices, journal, rules, suggest
 from utils.errors import LedgerError, NotFound
 from utils.journal import JournalError, LineInput
@@ -30,6 +30,7 @@ VIEWS = {
 REVIEWABLE = suggest.REVIEWABLE
 MAX_ROWS = 1000
 REASON_MAX = 120
+IN_HISTORY_REASON = "Already in QuickBooks history"
 
 
 def _serialize(t: BankTxn, ba: BankAccount, ctx: dict) -> dict:
@@ -51,6 +52,7 @@ def _serialize(t: BankTxn, ba: BankAccount, ctx: dict) -> dict:
         "suggested_payee": ctx["payees"].get(t.suggested_payee_id) if t.suggested_payee_id else None,
         "suggested_rule": rule.pattern if rule else None,
         "suggested_invoice": ctx["invoices"].get(t.suggested_invoice_id) if t.suggested_invoice_id else None,
+        "history_match": ctx["history"].get(t.id) if t.suggestion_reason == "IN_HISTORY" else None,
         "transfer_with": {
             "id": other.id, "bank_account": ctx["banks"][other.bank_account_id],
             "posted_date": other.posted_date.isoformat(), "description": other.description,
@@ -58,6 +60,7 @@ def _serialize(t: BankTxn, ba: BankAccount, ctx: dict) -> dict:
         "excluded_reason": t.excluded_reason,
         "entry_id": t.entry_id,
         "posted_to": ctx["offsets"].get(t.entry_id) if t.entry_id else None,
+        "posted_payee": ctx["entry_payees"].get(t.entry_id) if t.entry_id else None,
         "attachments": ctx["attachments"].get(t.id, 0),
         # A check or check deposit: its text names no payee, so nothing is learned from it.
         "anonymous": suggest.is_anonymous(t),
@@ -93,17 +96,28 @@ def list_lines(view: str = "review", bank_account_id: int | None = None) -> dict
                 if not targets:
                     targets.append("Transfer between bank accounts")
         pair_ids = {t.suggested_transfer_txn_id for t, _ in rows if t.suggested_transfer_txn_id}
+        entry_payees = {}
+        if entry_ids:
+            entry_payees = dict(session.execute(
+                select(JournalEntry.id, Payee.name).join(Payee, Payee.id == JournalEntry.payee_id)
+                .where(JournalEntry.id.in_(entry_ids))).all())
         ctx = {
             "names": names,
             "banks": banks,
             "offsets": offsets,
+            "entry_payees": entry_payees,
             "payees": dict(session.execute(select(Payee.id, Payee.name).where(
                 Payee.id.in_({t.suggested_payee_id for t, _ in rows if t.suggested_payee_id} or {0}))).all()),
             "rules": {r.id: r for r in session.scalars(select(PayeeRule))},
             "txns": {t.id: t for t in session.scalars(select(BankTxn).where(BankTxn.id.in_(pair_ids or {0})))},
             "attachments": attachments.counts(session, bank_txn_ids=[t.id for t, _ in rows]),
             "invoices": {},
+            "history": {},
         }
+        dup_lines = [t for t, _ in rows if t.suggestion_reason == "IN_HISTORY"]
+        if dup_lines:
+            for txn_id, (entry_id, when, memo) in suggest.in_history(session, dup_lines).items():
+                ctx["history"][txn_id] = {"entry_id": entry_id, "entry_date": when.isoformat(), "memo": memo}
         invoice_ids = {t.suggested_invoice_id for t, _ in rows if t.suggested_invoice_id}
         if invoice_ids:
             for inv in session.scalars(select(Invoice).where(Invoice.id.in_(invoice_ids))):
@@ -193,6 +207,24 @@ def check_post(txn_id: int, data: dict) -> dict:
                 "line_amount": to_str(abs(txn.amount))}
 
 
+def _payee_by_name(session, name, txn: BankTxn) -> int | None:
+    """The payee the owner typed when posting: an existing one (names compare without case,
+    as the database does), or a new one. A check's text names nobody, so this is how a
+    check gets its payee (owner's request, 2026-09-30)."""
+    name = " ".join((name or "").split())
+    if not name:
+        return None
+    if len(name) > 120:
+        raise LedgerError("The payee name is longer than 120 characters.")
+    payee = session.scalar(select(Payee).where(Payee.name == name))
+    if payee is None:
+        payee = Payee(name=name, is_vendor=txn.amount < 0, is_customer=txn.amount > 0, is_active=True)
+        session.add(payee)
+        session.flush()
+        audit.record(session, "payee.create", "payee", payee.id, {"name": name, "from_bank_txn": txn.id})
+    return payee.id
+
+
 def _touch_payee(session, payee_id: int | None, when) -> None:
     """A posting is a use: keep last_used_on current, and bring an archived payee back."""
     if not payee_id:
@@ -239,8 +271,14 @@ def _post(session, txn: BankTxn, data: dict) -> dict:
     lines, problems, _ = _entry_lines(session, txn, data)
     if problems:
         raise JournalError(problems)
-    payee_id = data.get("payee_id", txn.suggested_payee_id) or None
-    memo = journal._clean_memo(data.get("memo")) or txn.description[:journal.MEMO_MAX]
+    payee_id = (_payee_by_name(session, data.get("payee_name"), txn)
+                or data.get("payee_id", txn.suggested_payee_id) or None)
+    memo = journal._clean_memo(data.get("memo"))
+    if not memo:
+        # The bank's text stays the bank's (DESIGN.md 4: never edited); a named payee is
+        # added to the entry's memo so "CHECK 1029" reads as who it paid.
+        payee_name = session.get(Payee, payee_id).name if payee_id and data.get("payee_name") else None
+        memo = (txn.description + (f" - {payee_name}" if payee_name else ""))[:journal.MEMO_MAX]
 
     single = len(lines) == 2
     chosen = lines[1].account_id if single else None
@@ -314,6 +352,10 @@ def post_suggested(bank_account_id: int | None = None) -> dict:
                 if txn.suggestion_reason == "RULE_EXCLUDE":
                     rule = session.get(PayeeRule, txn.suggested_rule_id)
                     _exclude(session, txn, f"Rule: {rule.pattern}"[:REASON_MAX] if rule else "Rule")
+                    excluded += 1
+                    continue
+                if txn.suggestion_reason == "IN_HISTORY":
+                    _exclude(session, txn, IN_HISTORY_REASON)
                     excluded += 1
                     continue
                 if txn.suggestion_reason == "TRANSFER":

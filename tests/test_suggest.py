@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select, text
 
 import db
-from models import BankTxn, JournalEntry, Payee, PayeeRule
+from models import BankTxn, JournalEntry, Payee, PayeeRule, Settings
 from utils import bank_accounts, bank_queue, journal, rules, settings_manager, suggest
 from utils.errors import LedgerError
 from utils.feeds import file_import
@@ -203,6 +203,30 @@ def test_excluding_one_side_leaves_the_other_waiting(chart, feeds):
     assert line("Payment Thank You").suggestion_reason == "TRANSFER_WAITING"
 
 
+def test_remember_is_limited_to_the_lines_bank_account(chart, feeds):
+    file_import.import_file(feeds["card"], CARD_CSV, None)
+    r = bank_queue.post_line(line("EXAMPLE HOSTING").id, {"account_id": chart["6110"], "remember": True})
+    with db.SessionLocal() as session:
+        rule = session.get(PayeeRule, r["remembered"]["id"])
+        assert rule.bank_account_id == feeds["card"]
+    # The same text in checking is not claimed by the card's rule.
+    file_import.import_file(feeds["checking"], CHECKING_CSV.replace("CHECK 1029  ", "EXAMPLE HOSTING REFUND"), None)
+    assert line("EXAMPLE HOSTING REFUND").suggestion_reason is None
+
+
+def test_an_exact_invoice_amount_outranks_a_rule(chart, feeds):
+    from utils import invoices
+    with db.SessionLocal.begin() as session:
+        session.get(Settings, 1).default_income_account_id = chart["4000"]
+    customer = invoices.create_customer({"name": "Distant Client"})["id"]
+    inv = invoices.issue(invoices.save_draft({"customer_id": customer, "issue_date": "2026-09-01",
+                                              "lines": [{"description": "Hosting", "rate": "1500"}]})["id"])["id"]
+    rules.create_rule({"pattern": "zelle", "account_id": chart["6300"]})
+    file_import.import_file(feeds["checking"], CHECKING_CSV, None)
+    zelle = line("Zelle payment")
+    assert (zelle.suggestion_reason, zelle.suggested_invoice_id) == ("INVOICE_AMOUNT", inv)
+
+
 # ------------------------------------------------------------------ checks name no payee
 
 @pytest.mark.parametrize("description, category, anonymous", [
@@ -232,6 +256,77 @@ def test_a_check_is_never_remembered_grouped_or_learned(chart, feeds):
         assert session.scalars(select(PayeeRule)).all() == []
     # Posting a check taught history nothing: the next check gets no suggestion.
     assert line("CHECK 1030").suggestion_reason is None and line("CHECK 1030").status == "NEW"
+
+
+def test_a_check_is_posted_to_the_payee_the_owner_names(chart, feeds):
+    revenue = add_payee("Illinois Dept of Revenue", chart["6300"])
+    file_import.import_file(feeds["checking"], CHECKING_CSV, None)
+    check = line("CHECK 1029")
+    bank_queue.post_line(check.id, {"account_id": chart["6300"], "remember": True,
+                                    "payee_name": "  illinois dept of REVENUE ", "memo": ""})
+    check = line("CHECK 1029")
+    with db.SessionLocal() as session:
+        entry = session.get(JournalEntry, check.entry_id)
+        assert entry.payee_id == revenue
+        assert entry.memo == "CHECK 1029 - Illinois Dept of Revenue"
+        assert session.scalars(select(PayeeRule)).all() == []
+    assert check.description.startswith("CHECK 1029")                # the bank's text is untouched
+    posted = next(l for l in bank_queue.list_lines("posted")["lines"] if l["id"] == check.id)
+    assert posted["posted_payee"] == "Illinois Dept of Revenue"
+
+
+def test_a_check_to_a_new_name_creates_the_payee_and_keeps_the_owners_memo(chart, feeds):
+    file_import.import_file(feeds["checking"], CHECKING_CSV, None)
+    check = line("CHECK 1029")
+    bank_queue.post_line(check.id, {"account_id": chart["6300"], "payee_name": "Village Water Dept",
+                                    "memo": "Q3 water"})
+    with db.SessionLocal() as session:
+        entry = session.get(JournalEntry, line("CHECK 1029").entry_id)
+        payee = session.get(Payee, entry.payee_id)
+        assert (payee.name, payee.is_vendor, payee.is_active) == ("Village Water Dept", True, True)
+        assert entry.memo == "Q3 water"
+
+
+def _history_entry(chart, when, bank_amount, memo):
+    """A QuickBooks-history entry on checking: the bank side is `bank_amount`."""
+    with db.SessionLocal.begin() as session:
+        journal.post_entry(session, entry_date=when, source="IMPORT", memo=memo, lines=[
+            journal.LineInput(chart["1010"], Decimal(bank_amount)),
+            journal.LineInput(chart["6300"], -Decimal(bank_amount))])
+
+
+def test_a_line_already_in_quickbooks_history_is_suggested_for_exclusion(chart, feeds):
+    # QuickBooks dated the check two days before Chase posted it (09/18): a duplicate.
+    _history_entry(chart, date(2026, 9, 16), "-179.88", "CHECK 1029 Illinois Dept of Revenue")
+    # Same amount as the Zelle deposit (09/28) but eight days earlier: not the same money.
+    _history_entry(chart, date(2026, 9, 20), "1500.00", "Deposit")
+    file_import.import_file(feeds["checking"], CHECKING_CSV, None)
+
+    check, zelle = line("CHECK 1029"), line("Zelle payment")
+    assert (check.suggestion_reason, check.status) == ("IN_HISTORY", "SUGGESTED")
+    assert zelle.suggestion_reason != "IN_HISTORY"
+    shown = next(l for l in bank_queue.list_lines("review")["lines"] if l["id"] == check.id)
+    assert shown["history_match"]["entry_date"] == "2026-09-16"
+    assert shown["history_match"]["memo"] == "CHECK 1029 Illinois Dept of Revenue"
+
+    r = bank_queue.post_suggested(feeds["checking"])
+    assert r["excluded"] >= 1
+    check = line("CHECK 1029")
+    assert (check.status, check.excluded_reason) == ("EXCLUDED", bank_queue.IN_HISTORY_REASON)
+
+
+def test_one_history_line_covers_only_one_feed_line(chart, feeds):
+    two_checks = CHECKING_CSV.replace(
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n",
+        "Details,Posting Date,Description,Amount,Type,Balance,Check or Slip #\n"
+        "CHECK,09/19/2026,\"CHECK 1030  \",-179.88,CHECK_PAID,9000.00,1030,\n", 1)
+    _history_entry(chart, date(2026, 9, 16), "-179.88", "CHECK 1029")
+    file_import.import_file(feeds["checking"], two_checks, None)
+    assert line("CHECK 1029").suggestion_reason == "IN_HISTORY"
+    assert line("CHECK 1030").suggestion_reason != "IN_HISTORY"
+    # Excluding the first keeps its history line taken: the second is still not a duplicate.
+    bank_queue.exclude(line("CHECK 1029").id, bank_queue.IN_HISTORY_REASON)
+    assert line("CHECK 1030").suggestion_reason != "IN_HISTORY"
 
 
 def test_a_rule_the_owner_writes_still_applies_to_a_check(chart, feeds):

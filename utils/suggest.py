@@ -1,5 +1,5 @@
 """
-General Ledger v0.5.1
+General Ledger v0.6.1
 File: utils/suggest.py
 Description: Suggestions for bank lines in review (docs/DESIGN.md sections 6.3-6.4).
              Suggestions only: nothing here posts, and only a person moves a line to
@@ -7,14 +7,20 @@ Description: Suggestions for bank lines in review (docs/DESIGN.md sections 6.3-6
 
 Strongest first, and the first that applies wins:
 
+  IN_HISTORY a line already in the imported QuickBooks history: same bank account, same
+             amount, a history line up to five days earlier. Only near the boundary, where
+             QuickBooks dated a charge the 30th and Chase posted it the 1st (the Q3
+             rehearsal: TKLX BACKUP and APPLE.COM/BILL were in both). Suggests Exclude.
   TRANSFER   a card payment seen on both feeds: equal and opposite amounts within five
              days, one side looking like a card payment (or matching a TRANSFER rule).
              With only one side in, TRANSFER_WAITING: the line waits rather than posts.
   INVOICE    a deposit paying an open invoice (DESIGN.md 8.4): its number is in the text,
              or the amount is the balance and the customer's name is in the text.
+  INVOICE_AMOUNT  a deposit equal to exactly one open invoice's balance: the weaker
+             match, labelled so, but still ahead of rules -- rules are learned mostly
+             from spending, and a customer paying through QuickBooks Payments arrives as
+             "INTUIT ... DEPOSIT", which a card rule for "INTUIT" would otherwise claim.
   RULE       the owner's payee rules, in priority order.
-  INVOICE_AMOUNT  a deposit equal to exactly one open invoice's balance, nothing else
-             pointing anywhere: the weaker match, and labelled so.
   PAYEE      an ACTIVE payee's name found in the bank text; its default account.
   HISTORY    the account most used in the last twelve months for the same bank text.
 
@@ -30,10 +36,11 @@ from datetime import date, timedelta
 from sqlalchemy import select
 
 from db import SessionLocal
-from models import Account, BankAccount, BankTxn, Invoice, JournalLine, Payee, PayeeRule
+from models import Account, BankAccount, BankTxn, Invoice, JournalEntry, JournalLine, Payee, PayeeRule
 
 REVIEWABLE = ("NEW", "SUGGESTED")
 TRANSFER_WINDOW = timedelta(days=5)
+IN_HISTORY_WINDOW = timedelta(days=5)
 HISTORY_WINDOW = timedelta(days=365)
 PAYEE_NAME_MIN = 3
 
@@ -178,18 +185,15 @@ class Suggester:
         return account_id if account_id in self.postable else None
 
     def for_line(self, txn: BankTxn) -> Suggestion | None:
-        strong = self._invoice_for(txn)
-        if strong:
-            return strong
+        invoice = self._invoice_for(txn) or self._invoice_by_amount(txn)
+        if invoice:
+            return invoice
         for rule in self.rules:
             if rule.action == "TRANSFER" or not rule_matches(rule, txn):
                 continue
             if rule.action == "EXCLUDE":
                 return Suggestion("RULE_EXCLUDE", rule_id=rule.id, payee_id=rule.payee_id)
             return Suggestion("RULE", self._usable(rule.account_id), rule.payee_id, rule.id)
-        weak = self._invoice_by_amount(txn)
-        if weak:
-            return weak
         if is_anonymous(txn):
             return None  # only a rule the owner wrote may speak for a check
         text = normalise(txn.description)
@@ -235,6 +239,48 @@ def _pair_transfers(lines: list[BankTxn], suggester: Suggester) -> dict[int, Sug
     return out
 
 
+def in_history(session, lines: list[BankTxn]) -> dict[int, tuple[int, date, str]]:
+    """Feed lines that are already in the QuickBooks history (source IMPORT), as
+    {bank_txn id: (entry id, entry date, memo)}.
+
+    A match is the same bank account's ledger account, the same signed amount, and a
+    history date 0-5 days before the feed date. Every feed line near the history counts,
+    whatever its status, so a line already excluded (or posted) keeps its history line
+    and a second identical charge is not also suggested. Closest date first; the same
+    merchant text breaks ties. Each history line matches at most one feed line.
+    """
+    if not lines:
+        return {}
+    first = min(t.posted_date for t in lines)
+    rows = session.execute(
+        select(JournalLine.id, JournalLine.account_id, JournalLine.amount, JournalEntry.id,
+               JournalEntry.entry_date, JournalEntry.memo)
+        .join(JournalEntry, JournalEntry.id == JournalLine.entry_id)
+        .join(BankAccount, BankAccount.gl_account_id == JournalLine.account_id)
+        .where(JournalEntry.source == "IMPORT", JournalEntry.entry_date >= first - IN_HISTORY_WINDOW)
+    ).all()
+    if not rows:
+        return {}
+    last = max(r.entry_date for r in rows)
+    gl_of = dict(session.execute(select(BankAccount.id, BankAccount.gl_account_id)).all())
+    feed = session.scalars(select(BankTxn).where(
+        BankTxn.posted_date >= first - IN_HISTORY_WINDOW,
+        BankTxn.posted_date <= last + IN_HISTORY_WINDOW)).all()
+    taken: set[int] = set()
+    out: dict[int, tuple[int, date, str]] = {}
+    for t in sorted(feed, key=lambda t: (t.posted_date, t.id)):
+        key = history_key(t.description)
+        same = [r for r in rows
+                if r[0] not in taken and r.account_id == gl_of.get(t.bank_account_id) and r.amount == t.amount
+                and timedelta(0) <= t.posted_date - r.entry_date <= IN_HISTORY_WINDOW]
+        if same:
+            r = min(same, key=lambda r: (t.posted_date - r.entry_date,
+                                         0 if key and key in history_key(r.memo) else 1, r[0]))
+            taken.add(r[0])
+            out[t.id] = (r[3], r.entry_date, r.memo or "")
+    return out
+
+
 def run(session, today: date | None = None) -> dict:
     """Recompute every suggestion in the review queue. Does not commit.
 
@@ -243,10 +289,11 @@ def run(session, today: date | None = None) -> dict:
     """
     lines = session.scalars(select(BankTxn).where(BankTxn.status.in_(REVIEWABLE)).with_for_update()).all()
     suggester = Suggester(session, today)
-    transfers = _pair_transfers(lines, suggester)
+    duplicates = {i: Suggestion("IN_HISTORY") for i in in_history(session, lines)}
+    transfers = _pair_transfers([t for t in lines if t.id not in duplicates], suggester)
     counts: Counter = Counter()
     for t in lines:
-        s = transfers.get(t.id) or suggester.for_line(t)
+        s = duplicates.get(t.id) or transfers.get(t.id) or suggester.for_line(t)
         t.suggested_account_id = s.account_id if s else None
         t.suggested_payee_id = s.payee_id if s else None
         t.suggested_rule_id = s.rule_id if s else None
@@ -256,7 +303,7 @@ def run(session, today: date | None = None) -> dict:
         # SUGGESTED means "one click posts (or excludes) it"; a line with nothing
         # actionable stays NEW even when a payee was recognised.
         actionable = s is not None and (s.account_id or s.invoice_id
-                                        or s.reason in ("TRANSFER", "RULE_EXCLUDE"))
+                                        or s.reason in ("TRANSFER", "RULE_EXCLUDE", "IN_HISTORY"))
         t.status = "SUGGESTED" if actionable else "NEW"
         counts[s.reason if s else "NONE"] += 1
     return {"lines": len(lines), "suggested": sum(1 for t in lines if t.status == "SUGGESTED"),

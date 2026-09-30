@@ -53,8 +53,17 @@ row lock; Dr A/R / Cr income; the PDF as sent is kept under /data/invoices), voi
 reversal; the number is kept), and deposits matched to open invoices in Review (number in
 the text, or amount + customer name; amount alone is the weaker INVOICE_AMOUNT) and posted
 Dr bank / Cr A/R with an invoice_payment row. Emailing invoices waits on an SMTP account
-(DESIGN.md §14 question 8). Next: phase 3 (reports, opening balances, cutover). Keyboard
-shortcuts are deferred (docs/BACKLOG.md).
+(DESIGN.md §14 question 8). Phase 3: P&L, Balance Sheet and GL Detail in QuickBooks' layout
+(`utils/statements.py`); instead of an opening-balance entry the owner chose FULL QuickBooks
+history (`import-qbo-journal --before`, locked), with the bank feed from the boundary on. The
+whole thing is rebuilt with `manage.py rebuild-from-qbo` (see its --help); `--keep-learning`
+carries rules, payee edits and settings across by account number and payee name. Before the boundary
+the rebuild compares the last 90 days of each Chase file with the history both ways and lists
+what disagrees (fix in QuickBooks, re-export, rebuild); after it, a feed line matching a history
+line within five days is suggested IN_HISTORY (exclude) -- QuickBooks and Chase date the same
+charge differently around the boundary. Posted
+entries are immutable, so a re-run is a rebuild, never an update. The Schedule C tax summary,
+invoice email and keyboard shortcuts are deferred (docs/BACKLOG.md).
 Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
 
 Real Chase downloads live in `.bankdata/` (gitignored — real account data, never

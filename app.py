@@ -87,7 +87,10 @@ SUB_MENUS = {
         {"key": "registers", "label": "Registers", "url": "/journal/registers"},
     ],
     "reports": [
+        {"key": "pnl", "label": "P&L", "url": "/reports/profit-and-loss"},
+        {"key": "balance-sheet", "label": "Balance Sheet", "url": "/reports/balance-sheet"},
         {"key": "trial-balance", "label": "Trial Balance", "url": "/reports/trial-balance"},
+        {"key": "gl-detail", "label": "GL Detail", "url": "/reports/gl-detail"},
         {"key": "accounts", "label": "Account List", "url": "/reports/accounts"},
         {"key": "bank-transactions", "label": "Bank Transactions", "url": "/reports/bank-transactions"},
         {"key": "ar-aging", "label": "A/R Aging", "url": "/reports/ar-aging"},

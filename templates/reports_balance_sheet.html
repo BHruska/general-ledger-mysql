@@ -1,0 +1,128 @@
+<!--
+General Ledger v0.6.0
+File: templates/reports_balance_sheet.html
+Description: Reports -> Balance Sheet at a date, in QuickBooks' layout, optionally beside
+             the same date last year. Net income for the fiscal year is computed, not
+             posted; the server says whether the sheet balances.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% set active_sub = 'balance-sheet' %}
+
+{% block page_title %}Balance Sheet{% endblock %}
+{% block page_subtitle %}What the business has, owes and is worth at a date.{% endblock %}
+
+{% block styles %}
+<style>
+    table.statement td:first-child { width: 60%; }
+    tr.group td { font-weight: 700; padding-top: 16px; font-size: 14px; }
+    tr.sec td { font-weight: 600; padding-top: 10px; }
+    tr.acct td:first-child { padding-left: 22px; }
+    tr.acct.sub td:first-child { padding-left: 44px; }
+    tr.acct.head td:first-child { font-weight: 600; color: var(--text-muted); }
+    tr.subtotal td { font-weight: 600; border-top: 1px solid var(--border); }
+    tr.grand td { font-weight: 700; border-top: 2px solid var(--border); font-size: 14px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group"><label for="asOf">As of</label><input type="date" id="asOf"></div>
+        <div class="form-group">
+            <label for="compare">Compare with</label>
+            <select id="compare"><option value="none">Nothing</option><option value="prior_year">Same date last year</option></select>
+        </div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn" id="runBtn" onclick="run()">Run</button></div>
+        <div class="form-group"><label>&nbsp;</label><a class="btn secondary" id="csvLink" href="#">Download CSV</a></div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2 id="title">Balance Sheet</h2>
+        <div class="section-actions"><span class="status-line" id="status"></span></div>
+    </div>
+    <div class="alert" id="check" hidden></div>
+    <div class="table-wrap">
+        <table class="compact statement">
+            <thead id="head"></thead>
+            <tbody id="body"><tr><td class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function cells(values) { return values.map((v) => `<td class="num">${formatMoney(v)}</td>`).join(''); }
+    function blank(n) { return '<td></td>'.repeat(n); }
+
+    function section(sec, r) {
+        if (!sec.rows.length) return '';
+        const n = r.columns.length;
+        return `<tr class="sec"><td colspan="${n + 1}">${escapeHtml(sec.label)}</td></tr>`
+            + sec.rows.map((row) => {
+                const cls = ['acct', row.depth ? 'sub' : '', row.is_header ? 'head' : ''].join(' ');
+                const name = `${escapeHtml(row.number)} ${escapeHtml(row.name)}`;
+                const link = row.is_header ? name
+                    : `<a href="/reports/gl-detail?account_id=${row.account_id}&start=${r.fiscal_year_start}&end=${r.as_of}">${name}</a>`;
+                return `<tr class="${cls}"><td>${link}</td>${row.is_header ? blank(n) : cells(row.amounts)}</tr>`;
+            }).join('')
+            + `<tr class="subtotal"><td>Total ${escapeHtml(sec.label)}</td>${cells(sec.total)}</tr>`;
+    }
+
+    function line(label, values, cls = 'subtotal') { return `<tr class="${cls}"><td>${label}</td>${cells(values)}</tr>`; }
+    function group(label, n) { return `<tr class="group"><td colspan="${n + 1}">${label}</td></tr>`; }
+
+    async function run() {
+        const status = document.getElementById('status');
+        const done = setBusy(document.getElementById('runBtn'), 'Running...');
+        try {
+            const params = new URLSearchParams({ compare: document.getElementById('compare').value });
+            const asOf = document.getElementById('asOf').value;
+            if (asOf) params.set('as_of', asOf);
+            const r = (await api('/api/reports/balance-sheet?' + params)).report;
+            document.getElementById('asOf').value = r.as_of;
+            params.set('as_of', r.as_of);
+            document.getElementById('csvLink').href = '/api/reports/balance-sheet.csv?' + params;
+            document.getElementById('title').textContent = `Balance Sheet at ${r.as_of}`;
+            const n = r.columns.length;
+            document.getElementById('head').innerHTML = '<tr><th></th>'
+                + r.columns.map((c) => `<th class="num">${escapeHtml(c.as_of)}</th>`).join('') + '</tr>';
+            const s = Object.fromEntries(r.sections.map((x) => [x.key, x]));
+            const equity = s.equity;
+            document.getElementById('body').innerHTML =
+                group('Assets', n) + section(s.bank, r) + section(s.ar, r) + section(s.other_current_assets, r)
+                + line('Total Current Assets', r.total_current_assets)
+                + section(s.fixed_assets, r) + section(s.other_assets, r)
+                + line('Total Assets', r.total_assets, 'grand')
+                + group('Liabilities and Equity', n) + section(s.ap, r) + section(s.credit_cards, r)
+                + section(s.other_current_liabilities, r) + line('Total Current Liabilities', r.total_current_liabilities)
+                + section(s.long_term_liabilities, r) + line('Total Liabilities', r.total_liabilities)
+                + `<tr class="sec"><td colspan="${n + 1}">Equity</td></tr>`
+                + equity.rows.map((row) => `<tr class="acct${row.depth ? ' sub' : ''}"><td>
+                    <a href="/reports/gl-detail?account_id=${row.account_id}&start=${r.fiscal_year_start}&end=${r.as_of}">${escapeHtml(row.number)} ${escapeHtml(row.name)}</a>
+                    </td>${row.is_header ? blank(n) : cells(row.amounts)}</tr>`).join('')
+                + `<tr class="acct"><td>Net Income <small>(fiscal year from ${escapeHtml(r.fiscal_year_start)})</small></td>${cells(r.net_income)}</tr>`
+                + line('Total Equity', r.total_equity)
+                + line('Total Liabilities and Equity', r.total_liabilities_and_equity, 'grand');
+            const check = document.getElementById('check');
+            const ok = r.balanced.every((b) => b);
+            check.hidden = false;
+            check.className = 'alert ' + (ok ? 'alert-success' : 'alert-error');
+            check.textContent = ok ? 'In balance: total assets equal total liabilities and equity.'
+                : 'OUT OF BALANCE: assets and liabilities plus equity differ. Check the trial balance.';
+            status.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Run failed: ${e.message}`;
+        } finally {
+            done();
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', run);
+</script>
+{% endblock %}
+
+<!-- EOF - reports_balance_sheet.html -->

@@ -1,9 +1,9 @@
 """
-General Ledger v0.3.2
+General Ledger v0.6.0
 File: routes/reports_routes.py
 Description: Reports pages and JSON API, plus a CSV of the same rows for the accountant
-             (docs/DESIGN.md section 9). Trial balance, account list, bank transactions.
-             P&L, balance sheet, GL detail and the tax summary arrive in phase 3.
+             (docs/DESIGN.md section 9): P&L, balance sheet, trial balance, GL detail,
+             account list, bank transactions.
 """
 
 import csv
@@ -13,7 +13,7 @@ from datetime import date
 from flask import Blueprint, Response, redirect, render_template, request
 
 from routes.api import envelope
-from utils import reports
+from utils import reports, statements
 from utils.errors import LedgerError
 from utils.money import parse_optional_date
 
@@ -48,7 +48,22 @@ def _csv_error(e: LedgerError) -> Response:
 
 @reports_bp.route("/reports")
 def reports_index():
-    return redirect("/reports/trial-balance")
+    return redirect("/reports/profit-and-loss")
+
+
+@reports_bp.route("/reports/profit-and-loss")
+def pnl_page():
+    return render_template("reports_pnl.html")
+
+
+@reports_bp.route("/reports/balance-sheet")
+def balance_sheet_page():
+    return render_template("reports_balance_sheet.html")
+
+
+@reports_bp.route("/reports/gl-detail")
+def gl_detail_page():
+    return render_template("reports_gl_detail.html")
 
 
 @reports_bp.route("/reports/trial-balance")
@@ -133,5 +148,112 @@ def bank_transactions_csv():
     return _csv(f"bank-transactions-{r['start']}-to-{r['end']}.csv",
                 ["Date", "Account", "Description", "Bank category", "Amount", "Status",
                  "Posted to", "Entry", "Excluded because"], rows)
+
+
+# ---------------------------------------------------------------- profit and loss
+
+def _pnl_args():
+    start, end = _range()
+    return start, end, request.args.get("compare", "none")
+
+
+@reports_bp.route("/api/reports/profit-and-loss", methods=["GET"])
+@envelope
+def pnl():
+    return {"report": statements.profit_and_loss(*_pnl_args())}
+
+
+def _statement_rows(sections, width):
+    """Flatten statement sections into CSV rows: section label, account lines, total."""
+    out = []
+    for sec in sections:
+        out.append([sec["label"]] + [""] * width)
+        for r in sec["rows"]:
+            name = ("    " if r["depth"] else "") + f'{r["number"]} {r["name"]}'
+            out.append(["", name] + ([""] * len(r["amounts"]) if r["is_header"] else r["amounts"]))
+        out.append([f'Total {sec["label"]}', ""] + sec["total"])
+    return out
+
+
+@reports_bp.route("/api/reports/profit-and-loss.csv", methods=["GET"])
+def pnl_csv():
+    try:
+        r = statements.profit_and_loss(*_pnl_args())
+    except LedgerError as e:
+        return _csv_error(e)
+    cols = [f'{c["start"]} to {c["end"]}' for c in r["columns"]]
+    by_key = {sec["key"]: sec for sec in r["sections"]}
+    rows = _statement_rows([by_key["income"], by_key["cogs"]], len(cols))
+    rows.append(["Gross Profit", ""] + r["gross_profit"])
+    rows += _statement_rows([by_key["expenses"]], len(cols))
+    rows.append(["Net Operating Income", ""] + r["net_operating_income"])
+    rows += _statement_rows([by_key["other_income"], by_key["other_expense"]], len(cols))
+    rows.append(["Net Other Income", ""] + r["net_other_income"])
+    rows.append(["Net Income", ""] + r["net_income"])
+    return _csv(f'profit-and-loss-{r["start"]}-to-{r["end"]}.csv', ["Section", "Account"] + cols, rows)
+
+
+# ---------------------------------------------------------------- balance sheet
+
+def _bs_args():
+    return _as_of(), request.args.get("compare", "none")
+
+
+@reports_bp.route("/api/reports/balance-sheet", methods=["GET"])
+@envelope
+def balance_sheet():
+    return {"report": statements.balance_sheet(*_bs_args())}
+
+
+@reports_bp.route("/api/reports/balance-sheet.csv", methods=["GET"])
+def balance_sheet_csv():
+    try:
+        r = statements.balance_sheet(*_bs_args())
+    except LedgerError as e:
+        return _csv_error(e)
+    cols = [c["as_of"] for c in r["columns"]]
+    rows = _statement_rows([s for s in r["sections"] if s["key"] != "equity"], len(cols))
+    equity = next(s for s in r["sections"] if s["key"] == "equity")
+    rows.append(["Equity"] + [""] * len(cols))
+    for row in equity["rows"]:
+        rows.append(["", ("    " if row["depth"] else "") + f'{row["number"]} {row["name"]}']
+                    + ([""] * len(cols) if row["is_header"] else row["amounts"]))
+    rows.append(["", "Net Income"] + r["net_income"])
+    rows.append(["Total Equity", ""] + r["total_equity"])
+    rows.append(["Total Assets", ""] + r["total_assets"])
+    rows.append(["Total Liabilities and Equity", ""] + r["total_liabilities_and_equity"])
+    return _csv(f'balance-sheet-{r["as_of"]}.csv', ["Section", "Account"] + cols, rows)
+
+
+# ---------------------------------------------------------------- general ledger detail
+
+def _gl_args():
+    start, end = _range()
+    return start, end, request.args.get("account_id", type=int)
+
+
+@reports_bp.route("/api/reports/gl-detail", methods=["GET"])
+@envelope
+def gl_detail():
+    return {"report": statements.gl_detail(*_gl_args())}
+
+
+@reports_bp.route("/api/reports/gl-detail.csv", methods=["GET"])
+def gl_detail_csv():
+    try:
+        r = statements.gl_detail(*_gl_args())
+    except LedgerError as e:
+        return _csv_error(e)
+    rows = []
+    for a in r["accounts"]:
+        acct = f'{a["number"]} {a["name"]}'
+        rows.append([acct, r["start"], "", "", "Opening balance", "", "", "", "", a["opening"]])
+        for l in a["lines"]:
+            rows.append([acct, l["entry_date"], l["entry_id"], l["source"], l["memo"], l["payee"], l["split"],
+                         l["debit"], l["credit"], l["balance"]])
+        rows.append([acct, r["end"], "", "", "Closing balance", "", "", a["total_debit"], a["total_credit"],
+                     a["closing"]])
+    return _csv(f'gl-detail-{r["start"]}-to-{r["end"]}.csv',
+                ["Account", "Date", "Entry", "Source", "Memo", "Payee", "Split", "Debit", "Credit", "Balance"], rows)
 
 """ EOF - reports_routes.py """

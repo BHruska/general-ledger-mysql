@@ -200,8 +200,12 @@ Description: Journal -> Entries. Every entry in a date range with all its lines.
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        const posted = new URLSearchParams(window.location.search).get('posted');
+        const q = new URLSearchParams(window.location.search);
+        const posted = q.get('posted');
         if (posted) showSuccess(`Posted entry #${posted}.`);
+        // Links from reports (GL detail) open the journal on the entry's date.
+        if (q.get('start')) document.getElementById('startDate').value = q.get('start');
+        if (q.get('end')) document.getElementById('endDate').value = q.get('end');
         loadEntries();
     });
 </script>

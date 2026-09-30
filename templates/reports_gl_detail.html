@@ -1,0 +1,128 @@
+<!--
+General Ledger v0.6.0
+File: templates/reports_gl_detail.html
+Description: Reports -> General Ledger detail: every line by account for a range, with
+             opening and closing balances. Each line links to its journal entry and, if it
+             came from the bank feed, to its bank line.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'reports' %}
+{% set active_sub = 'gl-detail' %}
+{% block container_class %} wide{% endblock %}
+
+{% block page_title %}GL Detail{% endblock %}
+{% block page_subtitle %}Every posting, account by account.{% endblock %}
+
+{% block styles %}
+<style>
+    .container.wide { max-width: 1600px; }
+    tr.acct-head td { font-weight: 700; background: var(--surface-muted); border-top: 2px solid var(--border); }
+    tr.acct-foot td { font-weight: 600; border-top: 1px solid var(--border); }
+    td.memo { max-width: 380px; }
+</style>
+{% endblock %}
+
+{% block modals %}
+{% include "partials/_account_picker.html" %}
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="controls-grid">
+        <div class="form-group"><label for="startDate">From</label><input type="date" id="startDate"></div>
+        <div class="form-group"><label for="endDate">To</label><input type="date" id="endDate"></div>
+        <div class="form-group" style="grid-column: span 2;">
+            <label for="account">Account</label>
+            <select id="account"><option value="">All accounts</option></select>
+        </div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn" id="runBtn" onclick="run()">Run</button></div>
+        <div class="form-group"><label>&nbsp;</label><a class="btn secondary" id="csvLink" href="#">Download CSV</a></div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2 id="title">GL detail</h2>
+        <div class="section-actions"><span class="status-line" id="status"></span></div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr><th>Date</th><th>Entry</th><th>Source</th><th>Payee</th><th>Memo</th><th>Split</th>
+                <th class="num">Debit</th><th class="num">Credit</th><th class="num">Balance</th></tr></thead>
+            <tbody id="body"><tr><td colspan="9" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function money(v) { return v === null ? '' : formatMoney(v); }
+
+    async function run() {
+        const status = document.getElementById('status');
+        const body = document.getElementById('body');
+        const done = setBusy(document.getElementById('runBtn'), 'Running...');
+        status.textContent = 'Running...';
+        try {
+            const params = new URLSearchParams();
+            for (const [k, id] of [['start', 'startDate'], ['end', 'endDate'], ['account_id', 'account']]) {
+                const v = document.getElementById(id).value;
+                if (v) params.set(k, v);
+            }
+            const r = (await api('/api/reports/gl-detail?' + params)).report;
+            document.getElementById('startDate').value = r.start;
+            document.getElementById('endDate').value = r.end;
+            params.set('start', r.start); params.set('end', r.end);
+            document.getElementById('csvLink').href = '/api/reports/gl-detail.csv?' + params;
+            history.replaceState(null, '', '?' + params);
+            document.getElementById('title').textContent = `GL detail, ${r.start} to ${r.end}`;
+            if (!r.accounts.length) { tableMessage(body, 9, 'No postings in this range.'); }
+            else {
+                body.innerHTML = r.accounts.map((a) =>
+                    `<tr class="acct-head"><td colspan="8">${escapeHtml(a.number)} ${escapeHtml(a.name)}</td><td class="num">${formatMoney(a.opening)}</td></tr>`
+                    + a.lines.map((l) => `<tr>
+                        <td>${escapeHtml(l.entry_date)}</td>
+                        <td><a href="/journal?start=${l.entry_date}&end=${l.entry_date}">#${l.entry_id}</a></td>
+                        <td>${escapeHtml(l.source)}${l.bank_txn_id ? ` <a href="/reports/bank-transactions?start=${l.entry_date}&end=${l.entry_date}" title="The bank line">bank</a>` : ''}</td>
+                        <td>${l.payee === null ? '' : escapeHtml(l.payee)}</td>
+                        <td class="memo wrap">${l.memo === null ? '' : escapeHtml(l.memo)}</td>
+                        <td>${l.split === null ? '' : escapeHtml(l.split)}</td>
+                        <td class="num">${money(l.debit)}</td><td class="num">${money(l.credit)}</td>
+                        <td class="num">${formatMoney(l.balance)}</td></tr>`).join('')
+                    + `<tr class="acct-foot"><td colspan="6">Total ${escapeHtml(a.number)} ${escapeHtml(a.name)}</td>
+                        <td class="num">${formatMoney(a.total_debit)}</td><td class="num">${formatMoney(a.total_credit)}</td>
+                        <td class="num">${formatMoney(a.closing)}</td></tr>`).join('');
+            }
+            status.textContent = `${r.line_count} line(s) · updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Run failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 9, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    async function init() {
+        const q = new URLSearchParams(window.location.search);
+        if (q.get('start')) document.getElementById('startDate').value = q.get('start');
+        if (q.get('end')) document.getElementById('endDate').value = q.get('end');
+        try {
+            const { accounts } = await api('/api/accounts');
+            const sel = document.getElementById('account');
+            // Every account, active or not: history posts to accounts deactivated since.
+            sel.innerHTML = '<option value="">All accounts</option>' + accountOptionsHtml(
+                accounts.map((a) => ({ ...a, postable: !a.is_header })));
+            if (q.get('account_id')) sel.value = q.get('account_id');
+            enhanceAccountSelect(sel);
+        } catch (e) {
+            showError(e.message);
+        }
+        run();
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - reports_gl_detail.html -->

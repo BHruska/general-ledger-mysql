@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.5.1
+General Ledger v0.6.1
 File: templates/banking_review.html
 Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3). Each
              line arrives with a suggestion (rule, payee, history or transfer) already
@@ -22,6 +22,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     select.post-to { min-width: 240px; }
     tr.has-changes td { background: #fff8e1; }
     td.why { font-size: 12px; }
+    .check-fields { display: flex; gap: 6px; margin-top: 6px; }
+    .check-fields input { flex: 1; min-width: 0; }
     small.check-note { display: block; color: var(--text-muted); max-width: 300px; white-space: normal; }
     label.remember { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: normal; }
     #splitTable input, #splitTable select { width: 100%; }
@@ -81,6 +83,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
 </div>
 
 {% include "partials/_attachments.html" %}
+
+<datalist id="activePayees"></datalist>
 
 <div class="modal-overlay" id="payInvoiceModal">
     <div class="modal wide">
@@ -154,6 +158,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     function why(l) {
         switch (l.suggestion_reason) {
             case 'RULE': return `<span class="chip info">rule</span><small>${escapeHtml(l.suggested_rule)}</small>`;
+            case 'IN_HISTORY': return '<span class="chip warning">already in QuickBooks history</span>'
+                + '<small>Same account and amount, a few days earlier, in the imported history.</small>';
             case 'RULE_EXCLUDE': return `<span class="chip warning">rule: exclude</span><small>${escapeHtml(l.suggested_rule)}</small>`;
             case 'PAYEE': return `<span class="chip">payee</span><small>${escapeHtml(l.suggested_payee)}</small>`;
             case 'HISTORY': return '<span class="chip">based on history</span>'
@@ -190,6 +196,15 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
                     <button class="btn small secondary" onclick="openSplit(${l.id})">Post instead</button>
                     ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
         }
+        if (l.suggestion_reason === 'IN_HISTORY') {
+            const h = l.history_match;
+            return `<tr data-id="${l.id}">${common}
+                <td class="wrap">${h ? `Duplicate of the QuickBooks entry of <strong>${escapeHtml(h.entry_date)}</strong>
+                    <small>${escapeHtml(h.memo)}</small>` : 'Duplicate of a history entry'}</td>
+                <td class="why">${why(l)}</td>
+                <td><button class="btn small danger" onclick="acceptExclude(${l.id}, this)">Exclude</button>
+                    <button class="btn small secondary" onclick="openSplit(${l.id})">Post instead</button></td></tr>`;
+        }
         if (l.suggestion_reason === 'RULE_EXCLUDE') {
             return `<tr data-id="${l.id}">${common}
                 <td>Excluded by rule</td>
@@ -202,7 +217,13 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
             <td><select class="post-to" id="postTo${l.id}" onchange="accountChanged(${l.id})">
                     <option value="">Choose an account...</option>${accountOptions}</select>
                 ${l.anonymous
-                    ? '<br><small class="check-note">Check: the payee is not in the bank text; see the check image on chase.com. Nothing is remembered.</small>'
+                    ? `<div class="check-fields">
+                        <input type="text" id="payee${l.id}" list="activePayees" maxlength="120"
+                               placeholder="Payee (who the check was to)" onchange="payeeChosen(${l.id})">
+                        <input type="text" id="memo${l.id}" maxlength="255" placeholder="Memo (optional)">
+                       </div>
+                       <small class="check-note">The bank text names no payee; see the check image on chase.com.
+                           Nothing is remembered from the check number.</small>`
                     : `<br><label class="remember" title="Next time, the same bank text suggests this account">
                         <input type="checkbox" id="remember${l.id}"> Remember</label>`}</td>
             <td class="why">${why(l)}</td>
@@ -230,7 +251,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
                 <td><button class="btn small secondary" onclick="restoreLine(${l.id}, this)">Restore</button>
                 ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
         }
-        const postedTo = l.posted_to === null ? '—' : l.posted_to.map(escapeHtml).join(', ');
+        const postedTo = (l.posted_to === null ? '—' : l.posted_to.map(escapeHtml).join(', '))
+            + (l.posted_payee ? ` <small>· ${escapeHtml(l.posted_payee)}</small>` : '');
         return `<tr>${common}<td>${postedTo} <small>entry #${l.entry_id}</small></td><td></td>
             <td><button class="btn small secondary" onclick="unpostLine(${l.id}, this)">Undo</button>
             ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
@@ -341,10 +363,13 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         if (!accountId) { showWarning('Choose an account to post to first.'); return; }
         const rememberBox = document.getElementById(`remember${id}`);
         const remember = rememberBox ? rememberBox.checked : false;
+        const payeeBox = document.getElementById(`payee${id}`);
+        const memoBox = document.getElementById(`memo${id}`);
         const done = setBusy(button, 'Posting...');
         try {
             const r = await api(`/api/banking/lines/${id}/post`, {
-                method: 'POST', body: { account_id: Number(accountId), remember },
+                method: 'POST', body: { account_id: Number(accountId), remember,
+                    payee_name: payeeBox ? payeeBox.value : undefined, memo: memoBox ? memoBox.value : undefined },
             });
             if (r.remembered) {
                 showSuccess(`Posted as entry #${r.entry_id}. Remembered: bank text containing "${r.remembered.pattern}".`);
@@ -386,6 +411,21 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         } catch (e) {
             showError(e.message);
             done();
+        }
+    }
+
+    // ---------- checks: choose who a check paid
+    let payeeDefaults = {};
+
+    // Choosing a payee with a default account fills in the account, unless one is chosen.
+    function payeeChosen(id) {
+        const name = document.getElementById(`payee${id}`).value.trim().toLowerCase();
+        const account = payeeDefaults[name];
+        const sel = document.getElementById(`postTo${id}`);
+        if (account && !sel.value && [...sel.options].some((o) => o.value === String(account))) {
+            sel.value = String(account);
+            syncPicker(sel);
+            accountChanged(id);
         }
     }
 
@@ -521,7 +561,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         const line = lines.find((l) => l.id === id);
         const done = setBusy(button, 'Excluding...');
         try {
-            await api(`/api/banking/lines/${id}/exclude`, { method: 'POST', body: { reason: `Rule: ${line.suggested_rule}`.slice(0, 120) } });
+            await api(`/api/banking/lines/${id}/exclude`, { method: 'POST', body: { reason: line.suggestion_reason === 'IN_HISTORY'
+                ? 'Already in QuickBooks history' : `Rule: ${line.suggested_rule}`.slice(0, 120) } });
             showSuccess('Line excluded.');
             loadLines();
         } catch (e) {
@@ -577,7 +618,11 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
 
     async function init() {
         try {
-            const [{ accounts }, { accounts: feeds }] = await Promise.all([api('/api/accounts'), api('/api/banking/accounts')]);
+            const [{ accounts }, { accounts: feeds }, { payees }] = await Promise.all([
+                api('/api/accounts'), api('/api/banking/accounts'), api('/api/payees?view=active')]);
+            document.getElementById('activePayees').innerHTML = payees.map((p) => `<option value="${escapeHtml(p.name)}">`).join('');
+            payeeDefaults = Object.fromEntries(payees.filter((p) => p.default_account_id !== null)
+                .map((p) => [p.name.toLowerCase(), p.default_account_id]));
             // Bank and card accounts are left out: a line posted to another bank account is a
             // transfer, which the matcher pairs with the other side.
             accountOptions = accountOptionsHtml(accounts, { excludeBank: true });

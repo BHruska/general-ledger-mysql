@@ -1,5 +1,5 @@
 """
-General Ledger v0.5.0
+General Ledger v0.6.0
 File: utils/migration/qbo_invoices.py
 Description: Invoice history from QuickBooks Online (docs/DESIGN.md sections 8 and 10).
 
@@ -15,7 +15,12 @@ Decisions confirmed by the owner on 2026-09-30:
   - Open Invoices is the authority on what is unpaid;
   - QuickBooks does not say which payment paid which invoice, so each customer's payments
     are applied to their oldest invoices first and marked QBO_DERIVED;
-  - numbering continues QuickBooks' own sequence.
+  - numbering continues QuickBooks' own sequence;
+  - with a boundary (--before, the bank feed's start date), history stops there: invoices
+    issued on or after it are left out, and payments received on or after it are not
+    applied, so the invoice is open at the boundary and the feed's deposit pays it here.
+    (Found in the Q3 rehearsal: 5112 and 5113 were paid in August, and marking them paid
+    from QuickBooks left their August deposits nothing to pay.)
 """
 
 import csv
@@ -204,17 +209,36 @@ def plan(sales_csv: str, payments_csv: str, open_csv: str, customers_csv: str) -
                 parse_customers(customers_csv), (max(numbers) + 1) if numbers else 1)
 
 
-def summary(p: Plan) -> dict:
-    open_ = [i for i in p.invoices if i.open_balance > 0]
+def at_boundary(p: Plan, before: date | None) -> list[tuple[QboInvoice, Decimal, list]]:
+    """(invoice, amount paid at the boundary, payments before it) for each invoice issued
+    before the boundary. Money QuickBooks calls paid but no payment accounts for has no
+    date, so it counts as paid before the boundary."""
+    out = []
+    for inv in p.invoices:
+        if before and inv.issue_date >= before:
+            continue
+        allocations = p.allocations.get(inv.number, [])
+        later = sum((a for d, a in allocations if before and d >= before), Decimal("0.00"))
+        earlier = [(d, a) for d, a in allocations if not before or d < before]
+        out.append((inv, inv.total - inv.open_balance - later, earlier))
+    return out
+
+
+def summary(p: Plan, before: date | None = None) -> dict:
+    rows = at_boundary(p, before)
+    open_ = [(i, i.total - paid) for i, paid, _ in rows if i.total - paid > 0]
+    invs = [i for i, _, _ in rows]
     return {
-        "invoices": len(p.invoices),
-        "customers": len({_key(i.customer) for i in p.invoices}),
-        "lines": sum(len(i.lines) for i in p.invoices),
-        "total_invoiced": str(sum((i.total for i in p.invoices), Decimal("0.00"))),
-        "open": [{"number": i.number, "customer": i.customer, "balance": str(i.open_balance),
-                  "due_date": i.due_date.isoformat()} for i in open_],
-        "open_total": str(sum((i.open_balance for i in open_), Decimal("0.00"))),
-        "payments_applied": sum(len(v) for v in p.allocations.values()),
+        "before": before.isoformat() if before else None,
+        "invoices": len(invs),
+        "skipped_on_or_after_boundary": len(p.invoices) - len(invs),
+        "customers": len({_key(i.customer) for i in invs}),
+        "lines": sum(len(i.lines) for i in invs),
+        "total_invoiced": str(sum((i.total for i in invs), Decimal("0.00"))),
+        "open": [{"number": i.number, "customer": i.customer, "balance": str(bal),
+                  "due_date": i.due_date.isoformat()} for i, bal in open_],
+        "open_total": str(sum((bal for _, bal in open_), Decimal("0.00"))),
+        "payments_applied": sum(len(e) for _, _, e in rows),
         # Paid according to QuickBooks, but no payment in the export covers it (a payment
         # recorded some other way). Imported as paid; shown here so it is not a surprise.
         "paid_without_matching_payment": {k: str(v) for k, v in sorted(p.short.items())},
@@ -223,12 +247,12 @@ def summary(p: Plan) -> dict:
     }
 
 
-def preview(sales_csv, payments_csv, open_csv, customers_csv) -> dict:
-    return summary(plan(sales_csv, payments_csv, open_csv, customers_csv))
+def preview(sales_csv, payments_csv, open_csv, customers_csv, before: date | None = None) -> dict:
+    return summary(plan(sales_csv, payments_csv, open_csv, customers_csv), before)
 
 
 def apply(sales_csv, payments_csv, open_csv, customers_csv, *, active_since: date,
-          income_account_number: str | None = None, replace: bool = False) -> dict:
+          income_account_number: str | None = None, replace: bool = False, before: date | None = None) -> dict:
     p = plan(sales_csv, payments_csv, open_csv, customers_csv)
     with SessionLocal.begin() as session:
         existing = session.scalar(select(func.count()).select_from(Invoice))
@@ -252,7 +276,7 @@ def apply(sales_csv, payments_csv, open_csv, customers_csv, *, active_since: dat
             raise LedgerError("Could not find the income account for invoice lines; pass --income-account NUMBER.")
 
         payees = {_key(pe.name): pe for pe in session.scalars(select(Payee))}
-        for inv in sorted(p.invoices, key=lambda i: (i.issue_date, i.number)):
+        for inv, paid, allocations in sorted(at_boundary(p, before), key=lambda r: (r[0].issue_date, r[0].number)):
             ckey = _key(inv.customer)
             customer = payees.get(ckey)
             if customer is None:
@@ -265,18 +289,17 @@ def apply(sales_csv, payments_csv, open_csv, customers_csv, *, active_since: dat
             contact = p.customers.get(ckey, {})
             customer.email = customer.email or contact.get("email")
             customer.address = customer.address or contact.get("address")
-            last = max([inv.issue_date] + [d for d, _ in p.allocations.get(inv.number, [])])
+            last = max([inv.issue_date] + [d for d, _ in allocations])
             if customer.last_used_on is None or customer.last_used_on < last:
                 customer.last_used_on = last
             if customer.last_used_on >= active_since:
                 customer.is_active = True
 
-            paid = inv.total - inv.open_balance
-            allocations = p.allocations.get(inv.number, [])
-            completed = allocations[-1][0] if allocations and inv.open_balance == 0 and inv.number not in p.short else None
+            fully_paid = paid == inv.total
+            completed = allocations[-1][0] if allocations and fully_paid and inv.number not in p.short else None
             row = Invoice(number=inv.number, customer_id=customer.id, issue_date=inv.issue_date,
                           due_date=inv.due_date, terms=inv.terms,
-                          status="OPEN" if inv.open_balance > 0 else "PAID",
+                          status="PAID" if fully_paid else "OPEN",
                           total=inv.total, amount_paid=paid, paid_on=completed, source="QBO")
             session.add(row)
             session.flush()
@@ -291,9 +314,10 @@ def apply(sales_csv, payments_csv, open_csv, customers_csv, *, active_since: dat
         settings = session.get(Settings, 1)
         settings.next_invoice_seq = max(settings.next_invoice_seq or 1, p.next_number)
         settings.default_income_account_id = settings.default_income_account_id or income.id
-        s = summary(p)
+        s = summary(p, before)
         audit.record(session, "invoices.import_qbo", "invoice", None,
-                     {k: v for k, v in s.items() if k in ("invoices", "customers", "lines", "open_total", "next_number")})
+                     {k: v for k, v in s.items() if k in ("before", "invoices", "customers", "lines", "open_total",
+                                                          "next_number")})
         return s
 
 """ EOF - qbo_invoices.py """

@@ -59,6 +59,6 @@ WORKER_LOCK_NAME = "general-ledger-worker"
 APP_NAME = "General Ledger"
 # Every browser tab title starts with this (docs/STYLING.md section 3): "Ledger - <page>".
 APP_TITLE_PREFIX = "Ledger"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.6.0"
 
 """ EOF - config.py """

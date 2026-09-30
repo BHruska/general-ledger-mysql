@@ -9,6 +9,8 @@ this project (it is not a synced copy from `_standards`). The build order itself
 | Item | From | Notes |
 | --- | --- | --- |
 | Keyboard shortcuts on Banking → Review | DESIGN.md §12.3 | `j`/`k` to move, `Enter` post, `e` exclude, `s` split. Deferred 2026-09-30. |
+| Tax summary (Schedule C) | DESIGN.md §9, phase 3 | Entity is a single-member LLC, so Schedule C lines. Needs a tax line on every income and expense account (propose a mapping from names and QBO detail types for the owner to review), then the report grouping by it. Deferred 2026-09-30. |
+| Invoice email (SMTP) | DESIGN.md §8.3 | Waits on the owner choosing an SMTP account and from-address (§14 Q8). Download the PDF meanwhile. |
 
 ## Ideas to investigate
 
