@@ -69,8 +69,8 @@ TEST_BANK_ACCOUNTS = {"1010", "2010"}
 
 # TRUNCATE skips the DELETE triggers that forbid removing posted lines, which is the
 # only reason the suite can reset them at all. Foreign-key checks are off meanwhile.
-RESET_TABLES = ("bank_txn", "bank_account", "bank_connection", "journal_line", "journal_entry",
-                "audit_log", "payee", "account")
+RESET_TABLES = ("bank_txn", "payee_rule", "bank_account", "bank_connection", "journal_line",
+                "journal_entry", "audit_log", "payee", "account")
 
 
 @pytest.fixture(autouse=True)

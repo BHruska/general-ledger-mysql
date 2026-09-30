@@ -86,6 +86,7 @@ SUB_MENUS = {
     "setup": [
         {"key": "accounts", "label": "Accounts", "url": "/setup/accounts"},
         {"key": "payees", "label": "Payees", "url": "/setup/payees"},
+        {"key": "rules", "label": "Rules", "url": "/setup/rules"},
         {"key": "settings", "label": "Settings", "url": "/setup/settings"},
     ],
 }

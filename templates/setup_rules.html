@@ -1,0 +1,274 @@
+<!--
+General Ledger v0.4.0
+File: templates/setup_rules.html
+Description: Setup -> Rules. "Description contains X -> account Y", in priority order;
+             the first matching rule suggests. Rules never post. "Remember" on the
+             review page adds and updates these.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'setup' %}
+{% set active_sub = 'rules' %}
+
+{% block page_title %}Rules{% endblock %}
+{% block page_subtitle %}What a bank line's text suggests. Rules only suggest; you still post.{% endblock %}
+
+{% block styles %}
+<style>
+    tr.inactive td { color: var(--text-faint); }
+    code { font-size: 12px; background: var(--surface-muted); padding: 1px 4px; border-radius: 3px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2>Rules</h2>
+        <div class="section-actions">
+            <span class="status-line" id="rulesStatus"></span>
+            <button class="btn success" onclick="openRule(null)">+ Add rule</button>
+        </div>
+    </div>
+    <div class="info-box">
+        Rules are checked lowest priority number first, and the first match wins. When no rule matches, an
+        active payee's name in the bank text suggests that payee's default account, then your own posting
+        history does. <strong>In review</strong> counts the lines a rule matches right now, so a pattern
+        that is too broad stands out.
+    </div>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr>
+                <th class="num">Priority</th><th>When the bank text</th><th>Only if</th><th>Then</th>
+                <th class="num">Accepted</th><th class="num">In review</th><th></th>
+            </tr></thead>
+            <tbody id="rulesBody"><tr><td colspan="7" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div class="modal-overlay" id="ruleModal">
+    <div class="modal">
+        <h3 id="ruleTitle">Add rule</h3>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="rMatchType">When the bank text</label>
+                <select id="rMatchType" oninput="schedulePreview()">
+                    <option value="CONTAINS">contains</option><option value="STARTS_WITH">starts with</option>
+                    <option value="EQUALS">equals</option><option value="REGEX">matches regex</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="rPattern">Text</label>
+                <input type="text" id="rPattern" maxlength="200" oninput="schedulePreview()" placeholder="e.g. HOSTINGER">
+            </div>
+        </div>
+        <p class="note" id="rPreview">Matching ignores case and punctuation.</p>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="rAction">Then</label>
+                <select id="rAction" onchange="actionChanged()">
+                    <option value="SUGGEST">suggest an account</option>
+                    <option value="EXCLUDE">suggest excluding it</option>
+                    <option value="TRANSFER">treat it as a card payment (transfer)</option>
+                </select>
+            </div>
+            <div class="form-group" id="rAccountGroup">
+                <label for="rAccount">Account</label>
+                <select id="rAccount"></select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="rPayee">Payee (optional)</label>
+            <input type="text" id="rPayee" list="payeeList" placeholder="Start typing an active payee">
+            <datalist id="payeeList"></datalist>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="rBank">Only on bank account</label>
+                <select id="rBank" oninput="schedulePreview()"></select>
+            </div>
+            <div class="form-group">
+                <label for="rPriority">Priority (lower wins)</label>
+                <input type="number" id="rPriority" min="0" max="9999" value="100">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="rMin">Amount at least</label>
+                <input type="text" id="rMin" inputmode="decimal" oninput="schedulePreview()">
+            </div>
+            <div class="form-group">
+                <label for="rMax">Amount at most</label>
+                <input type="text" id="rMax" inputmode="decimal" oninput="schedulePreview()">
+            </div>
+        </div>
+        <label><input type="checkbox" id="rActive" checked> Active</label>
+        <div class="alert alert-error" id="ruleError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('ruleModal')">Cancel</button>
+            <button class="btn success" id="ruleSaveBtn" onclick="saveRule()">Save</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const TYPE_TEXT = { CONTAINS: 'contains', STARTS_WITH: 'starts with', EQUALS: 'equals', REGEX: 'matches' };
+    let rules = [];
+    let payeeIds = {};
+    let editingId = null;
+    let previewTimer = null;
+
+    async function load() {
+        const status = document.getElementById('rulesStatus');
+        try {
+            rules = (await api('/api/rules')).rules;
+            const body = document.getElementById('rulesBody');
+            if (!rules.length) {
+                tableMessage(body, 7, 'No rules yet. Add one, or tick "Remember" when posting on the Review page.');
+            } else {
+                body.innerHTML = rules.map((r) => {
+                    const limits = [r.bank_account ? escapeHtml(r.bank_account) : '',
+                        r.amount_min !== null ? `≥ ${formatMoney(r.amount_min)}` : '',
+                        r.amount_max !== null ? `≤ ${formatMoney(r.amount_max)}` : ''].filter(Boolean).join(', ') || '—';
+                    const then = r.action === 'EXCLUDE' ? '<span class="chip warning">EXCLUDE</span>'
+                        : r.action === 'TRANSFER' ? '<span class="chip info">TRANSFER</span>'
+                        : (r.account === null ? '—' : escapeHtml(r.account));
+                    return `<tr class="${r.is_active ? '' : 'inactive'}">
+                        <td class="num">${r.priority}</td>
+                        <td>${TYPE_TEXT[r.match_type]} <code>${escapeHtml(r.pattern)}</code>${r.is_active ? '' : ' <span class="chip">OFF</span>'}</td>
+                        <td>${limits}</td>
+                        <td>${then}${r.payee ? `<br><small>payee ${escapeHtml(r.payee)}</small>` : ''}</td>
+                        <td class="num">${r.times_applied}</td>
+                        <td class="num">${r.matches_in_review}</td>
+                        <td>
+                            <button class="btn small secondary" onclick="openRule(${r.id})">Edit</button>
+                            <button class="btn small danger" onclick="deleteRule(${r.id})">Delete</button>
+                        </td>
+                    </tr>`;
+                }).join('');
+            }
+            status.textContent = `${rules.length} rule(s)`;
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+        }
+    }
+
+    function actionChanged() {
+        document.getElementById('rAccountGroup').hidden = document.getElementById('rAction').value !== 'SUGGEST';
+    }
+
+    function openRule(id) {
+        editingId = id;
+        const r = id === null ? null : rules.find((x) => x.id === id);
+        document.getElementById('ruleTitle').textContent = r ? 'Edit rule' : 'Add rule';
+        document.getElementById('rMatchType').value = r ? r.match_type : 'CONTAINS';
+        document.getElementById('rPattern').value = r ? r.pattern : '';
+        document.getElementById('rAction').value = r ? r.action : 'SUGGEST';
+        document.getElementById('rAccount').value = r && r.account_id !== null ? String(r.account_id) : '';
+        document.getElementById('rPayee').value = r && r.payee ? r.payee : '';
+        document.getElementById('rBank').value = r && r.bank_account_id !== null ? String(r.bank_account_id) : '';
+        document.getElementById('rPriority').value = r ? r.priority : 100;
+        document.getElementById('rMin').value = r && r.amount_min !== null ? r.amount_min : '';
+        document.getElementById('rMax').value = r && r.amount_max !== null ? r.amount_max : '';
+        document.getElementById('rActive').checked = r ? r.is_active : true;
+        document.getElementById('ruleError').hidden = true;
+        actionChanged();
+        openModal('ruleModal');
+        schedulePreview();
+    }
+
+    function form() {
+        const payeeName = document.getElementById('rPayee').value.trim();
+        const action = document.getElementById('rAction').value;
+        const account = document.getElementById('rAccount').value;
+        const bank = document.getElementById('rBank').value;
+        return {
+            match_type: document.getElementById('rMatchType').value,
+            pattern: document.getElementById('rPattern').value,
+            action,
+            account_id: action === 'SUGGEST' && account ? Number(account) : null,
+            payee_id: payeeName ? (payeeIds[payeeName.toLowerCase()] ?? -1) : null,
+            bank_account_id: bank ? Number(bank) : null,
+            priority: Number(document.getElementById('rPriority').value),
+            amount_min: document.getElementById('rMin').value || null,
+            amount_max: document.getElementById('rMax').value || null,
+            is_active: document.getElementById('rActive').checked,
+        };
+    }
+
+    function schedulePreview() {
+        clearTimeout(previewTimer);
+        previewTimer = setTimeout(async () => {
+            const el = document.getElementById('rPreview');
+            const f = form();
+            if (!f.pattern.trim()) { el.textContent = 'Matching ignores case and punctuation.'; return; }
+            try {
+                const { preview: p } = await api('/api/rules/preview', { method: 'POST', body: f });
+                el.textContent = `Matches ${p.matches} line(s) now in review`
+                    + (p.sample.length ? `, e.g. ${p.sample.slice(0, 3).join(' · ')}` : '.');
+            } catch (e) {
+                el.textContent = e.message;
+            }
+        }, 300);
+    }
+
+    async function saveRule() {
+        const errorEl = document.getElementById('ruleError');
+        const f = form();
+        if (f.payee_id === -1) {
+            errorEl.textContent = 'That payee is not an active payee. Pick one from the list, or reactivate it under Payees.';
+            errorEl.hidden = false;
+            return;
+        }
+        const done = setBusy(document.getElementById('ruleSaveBtn'), 'Saving...');
+        try {
+            if (editingId === null) await api('/api/rules', { method: 'POST', body: f });
+            else await api(`/api/rules/${editingId}`, { method: 'PATCH', body: f });
+            closeModal('ruleModal');
+            showSuccess('Rule saved; suggestions updated.');
+            load();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function deleteRule(id) {
+        const r = rules.find((x) => x.id === id);
+        if (!confirm(`Delete the rule "${TYPE_TEXT[r.match_type]} ${r.pattern}"? Lines it suggested are re-suggested.`)) return;
+        try {
+            await api(`/api/rules/${id}`, { method: 'DELETE' });
+            showSuccess('Rule deleted.');
+            load();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    async function init() {
+        try {
+            const [{ accounts }, { payees }, { accounts: feeds }] = await Promise.all([
+                api('/api/accounts'), api('/api/payees?view=active'), api('/api/banking/accounts')]);
+            document.getElementById('rAccount').innerHTML = '<option value="">Choose an account...</option>' +
+                accounts.filter((a) => a.postable && !a.is_bank_account).map((a) =>
+                    `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+            document.getElementById('payeeList').innerHTML = payees.map((p) => `<option value="${escapeHtml(p.name)}">`).join('');
+            payeeIds = Object.fromEntries(payees.map((p) => [p.name.toLowerCase(), p.id]));
+            document.getElementById('rBank').innerHTML = '<option value="">Any account</option>' + feeds.map((f) =>
+                `<option value="${f.id}">${escapeHtml(f.name)}</option>`).join('');
+        } catch (e) {
+            showError(e.message);
+        }
+        load();
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - setup_rules.html -->

@@ -183,13 +183,38 @@ class BankTxn(Base):
     status: Mapped[str] = mapped_column(Enum(*BANK_TXN_STATUSES), nullable=False, default="NEW")
     suggested_account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id"), nullable=True)
     suggested_payee_id: Mapped[int | None] = mapped_column(ForeignKey("payee.id"), nullable=True)
-    suggested_rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    suggested_rule_id: Mapped[int | None] = mapped_column(ForeignKey("payee_rule.id"), nullable=True)
     suggested_invoice_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     suggested_transfer_txn_id: Mapped[int | None] = mapped_column(ForeignKey("bank_txn.id"), nullable=True)
+    # Where the suggestion came from: RULE, RULE_EXCLUDE, PAYEE, HISTORY, TRANSFER,
+    # TRANSFER_WAITING (a card payment whose other side has not arrived yet).
+    suggestion_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
     entry_id: Mapped[int | None] = mapped_column(ForeignKey("journal_entry.id"), nullable=True)
     excluded_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
     raw_json: Mapped[dict] = mapped_column(JSON, nullable=False)
     first_seen_at: Mapped[datetime] = mapped_column(utc_timestamp(), nullable=False)
+
+
+class PayeeRule(Base):
+    """"Description contains X -> account Y" (DESIGN.md section 6.4). Suggests; never posts."""
+
+    __tablename__ = "payee_rule"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    match_field: Mapped[str] = mapped_column(Enum("DESCRIPTION", "MERCHANT"), nullable=False, default="DESCRIPTION")
+    match_type: Mapped[str] = mapped_column(
+        Enum("CONTAINS", "STARTS_WITH", "EQUALS", "REGEX"), nullable=False, default="CONTAINS")
+    pattern: Mapped[str] = mapped_column(String(200), nullable=False)
+    bank_account_id: Mapped[int | None] = mapped_column(ForeignKey("bank_account.id"), nullable=True)
+    amount_min: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    amount_max: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    payee_id: Mapped[int | None] = mapped_column(ForeignKey("payee.id"), nullable=True)
+    account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id"), nullable=True)
+    action: Mapped[str] = mapped_column(Enum("SUGGEST", "EXCLUDE", "TRANSFER"), nullable=False, default="SUGGEST")
+    memo_template: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    times_applied: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class AuditLog(Base):

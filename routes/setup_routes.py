@@ -8,7 +8,7 @@ Description: Setup pages (Accounts, Settings) and their JSON API. Payees, Rules 
 from flask import Blueprint, redirect, render_template, request
 
 from routes.api import body, envelope
-from utils import accounts, payees, settings_manager
+from utils import accounts, payees, rules, settings_manager
 
 setup_bp = Blueprint("setup", __name__)
 
@@ -74,6 +74,42 @@ def update_payee(payee_id):
 @envelope
 def archive_unused():
     return payees.archive_unused(body())
+
+
+@setup_bp.route("/setup/rules")
+def rules_page():
+    return render_template("setup_rules.html")
+
+
+@setup_bp.route("/api/rules", methods=["GET"])
+@envelope
+def list_rules():
+    return rules.list_rules()
+
+
+@setup_bp.route("/api/rules", methods=["POST"])
+@envelope
+def create_rule():
+    return {"rule": rules.create_rule(body())}
+
+
+@setup_bp.route("/api/rules/<int:rule_id>", methods=["PATCH"])
+@envelope
+def update_rule(rule_id):
+    return {"rule": rules.update_rule(rule_id, body())}
+
+
+@setup_bp.route("/api/rules/<int:rule_id>", methods=["DELETE"])
+@envelope
+def delete_rule(rule_id):
+    rules.delete_rule(rule_id)
+    return {}
+
+
+@setup_bp.route("/api/rules/preview", methods=["POST"])
+@envelope
+def preview_rule():
+    return {"preview": rules.preview_pattern(body())}
 
 
 @setup_bp.route("/api/settings", methods=["GET"])

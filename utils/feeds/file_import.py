@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 
 from db import SessionLocal
 from models import BankAccount, BankTxn
-from utils import audit
+from utils import audit, suggest
 from utils.errors import LedgerError, NotFound
 from utils.money import ZERO, parse_amount, to_str
 
@@ -273,7 +273,10 @@ def import_file(bank_account_id: int, content: str, filename: str | None) -> dic
                 plan.account.reported_balance = latest.balance
                 plan.account.reported_balance_at = as_of
 
+        session.flush()
+        # New lines arrive with their suggestions (and card payments paired) already made.
         summary = _summary(plan)
+        summary["suggestions"] = suggest.run(session)
         audit.record(session, "bank.import", "bank_account", plan.account.id, {
             "file": filename, "layout": plan.parsed.layout, "rows": len(plan.parsed.rows),
             "added": len(plan.new), "already_present": plan.already_present,

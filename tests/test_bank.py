@@ -259,7 +259,9 @@ def test_queue_listing_and_counts(chart, feeds):
     file_import.import_file(feeds["card"], CARD_CSV, None)
     bank_queue.post_line(txn_by("EXAMPLE HOSTING").id, {"account_id": chart["6110"]})
     review = bank_queue.list_lines("review")
-    assert review["counts"] == {"review": 5, "excluded": 0, "posted": 1}
+    # Nothing is suggested: this test has no payees or rules, and the card payment has no
+    # checking side to pair with.
+    assert review["counts"] == {"review": 5, "suggested": 0, "excluded": 0, "posted": 1}
     assert review["lines"][0]["posted_date"] == "2026-09-27"
     posted = bank_queue.list_lines("posted")["lines"][0]
     assert posted["posted_to"] == ["6110 Hosting"]

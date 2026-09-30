@@ -39,8 +39,11 @@ There is **one Dockerfile and no dev variant**. Tests run against MySQL only.
 
 Phases 0 (skeleton) and 1 (core ledger) are done, and phase 2a: Chase **CSV** import
 (QFX deliberately not supported: it truncates descriptions and its checking FITID is
-just date + sequence) and the review queue. Next: phase 2b, payee rules and learned
-suggestions, card-payment transfer matching, receipt attachments, "Post all suggested".
+just date + sequence) and the review queue; the QuickBooks chart and payees are imported
+(`manage.py import-qbo-chart`, `import-qbo-payees`); phase 2b: suggestions
+(`utils/suggest.py`: transfer > rule > active payee > history, recomputed from scratch
+after every change), payee rules and "Remember", transfers posted as one entry, "Post
+all suggested". Next: phase 2c, receipt attachments and review-page keyboard shortcuts.
 Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
 
 Real Chase downloads live in `.bankdata/` (gitignored — real account data, never

@@ -129,4 +129,16 @@ def restore_line(txn_id):
 def unpost_line(txn_id):
     return bank_queue.unpost(txn_id)
 
+
+@banking_bp.route("/api/banking/suggest", methods=["POST"])
+@envelope
+def refresh_suggestions():
+    return {"suggestions": bank_queue.refresh_suggestions()}
+
+
+@banking_bp.route("/api/banking/post-suggested", methods=["POST"])
+@envelope
+def post_suggested():
+    return bank_queue.post_suggested(body().get("bank_account_id") or None)
+
 """ EOF - banking_routes.py """
