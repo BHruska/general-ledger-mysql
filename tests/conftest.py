@@ -64,9 +64,13 @@ TEST_CHART = {
     "6300": ("Travel", "EXPENSE", None),
 }
 
-# Child tables first. TRUNCATE skips the DELETE triggers that forbid removing posted
-# lines, which is the only reason the suite can reset them at all.
-RESET_TABLES = ("journal_line", "journal_entry", "audit_log", "payee", "account")
+# Accounts a bank feed can post to.
+TEST_BANK_ACCOUNTS = {"1010", "2010"}
+
+# TRUNCATE skips the DELETE triggers that forbid removing posted lines, which is the
+# only reason the suite can reset them at all. Foreign-key checks are off meanwhile.
+RESET_TABLES = ("bank_txn", "bank_account", "bank_connection", "journal_line", "journal_entry",
+                "audit_log", "payee", "account")
 
 
 @pytest.fixture(autouse=True)
@@ -83,8 +87,10 @@ def chart(migrated_database):
         conn.execute(text("SET FOREIGN_KEY_CHECKS = 1"))
         for number, (name, type_, parent) in TEST_CHART.items():
             result = conn.execute(
-                text("INSERT INTO account (number, name, type, parent_id) VALUES (:n, :name, :t, :p)"),
-                {"n": number, "name": name, "t": type_, "p": ids.get(parent)},
+                text("INSERT INTO account (number, name, type, parent_id, is_bank_account) "
+                     "VALUES (:n, :name, :t, :p, :bank)"),
+                {"n": number, "name": name, "t": type_, "p": ids.get(parent),
+                 "bank": number in TEST_BANK_ACCOUNTS},
             )
             ids[number] = result.lastrowid
         conn.execute(text(

@@ -37,9 +37,14 @@ There is **one Dockerfile and no dev variant**. Tests run against MySQL only.
 
 ## Build order (docs/DESIGN.md section 13)
 
-Phases 0 (skeleton) and 1 (core ledger) are done. Next: phase 2, Chase CSV/QFX import
-and the review queue. Plaid is phase 4 and its decisions are already settled in
-`PLAID_PLAN.md`.
+Phases 0 (skeleton) and 1 (core ledger) are done, and phase 2a: Chase **CSV** import
+(QFX deliberately not supported: it truncates descriptions and its checking FITID is
+just date + sequence) and the review queue. Next: phase 2b, payee rules and learned
+suggestions, card-payment transfer matching, receipt attachments, "Post all suggested".
+Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
+
+Real Chase downloads live in `.bankdata/` (gitignored — real account data, never
+committed). Tests use the synthetic look-alikes in `tests/fixtures/`.
 
 Migration 0002 installs the DESIGN.md 3.2a triggers (plus two on `journal_entry`). On
 the server they need `log_bin_trust_function_creators=1` on the shared `db` service —

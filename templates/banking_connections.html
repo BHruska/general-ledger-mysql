@@ -1,0 +1,183 @@
+<!--
+General Ledger v0.3.0
+File: templates/banking_connections.html
+Description: Banking -> Connections. Each feed account links one GL bank or card account
+             to its source. Phase 2a: file-fed (CSV) accounts; Plaid joins in phase 4.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'banking' %}
+{% set active_sub = 'connections' %}
+
+{% block page_title %}Connections{% endblock %}
+{% block page_subtitle %}The bank and card accounts that feed the review queue.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2>Feed accounts</h2>
+        <div class="section-actions">
+            <span class="status-line" id="acctStatus"></span>
+            <button class="btn success" id="addBtn" onclick="openAdd()">+ Add account</button>
+        </div>
+    </div>
+    <div class="info-box">
+        Lines dated before an account's <strong>feed start</strong> are ignored on import, never queued.
+        The GL balance and the bank's balance should differ only by lines still waiting in review.
+    </div>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr>
+                <th>Account</th><th>Source</th><th>Posts to</th><th>Feed start</th>
+                <th class="num">To review</th><th class="num">Posted</th>
+                <th class="num">GL balance</th><th class="num">Bank balance</th><th>Last import</th><th></th>
+            </tr></thead>
+            <tbody id="acctBody"><tr><td colspan="10" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div class="modal-overlay" id="acctModal">
+    <div class="modal">
+        <h3 id="acctModalTitle">Add feed account</h3>
+        <div class="form-group" id="glGroup">
+            <label for="glAccount">Posts to GL account</label>
+            <select id="glAccount"></select>
+            <small>Only accounts marked "Bank or card account" in Setup -> Accounts, and not already linked.</small>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="acctName">Name</label>
+                <input type="text" id="acctName" maxlength="100" placeholder="e.g. Chase Checking">
+            </div>
+            <div class="form-group">
+                <label for="acctMask">Last digits</label>
+                <input type="text" id="acctMask" maxlength="8" inputmode="numeric" placeholder="e.g. 3396">
+            </div>
+        </div>
+        <div class="form-group">
+            <label for="feedStart">Feed start date</label>
+            <input type="date" id="feedStart">
+            <small>Imported lines before this date are skipped.</small>
+        </div>
+        <div class="alert alert-error" id="acctError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('acctModal')">Cancel</button>
+            <button class="btn success" id="acctSaveBtn" onclick="saveAccount()">Save</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let accounts = [];
+    let eligible = [];
+    let editingId = null;
+
+    function balanceCell(v) { return v === null ? '—' : formatMoney(v); }
+
+    async function load() {
+        const status = document.getElementById('acctStatus');
+        const body = document.getElementById('acctBody');
+        try {
+            const data = await api('/api/banking/accounts');
+            accounts = data.accounts;
+            eligible = data.eligible_gl_accounts;
+            document.getElementById('addBtn').disabled = !eligible.length;
+            if (!accounts.length) {
+                tableMessage(body, 10, 'No feed accounts yet. Add one with + Add account.');
+            } else {
+                body.innerHTML = accounts.map((a) => `<tr>
+                    <td><strong>${escapeHtml(a.name)}</strong>${a.mask ? ` ··${escapeHtml(a.mask)}` : ''}</td>
+                    <td><span class="chip">${escapeHtml(a.provider)}</span> ${escapeHtml(a.institution)}</td>
+                    <td><a href="/journal/registers?account=${a.gl_account_id}">${escapeHtml(a.gl_account)}</a></td>
+                    <td>${escapeHtml(a.feed_start_date)}</td>
+                    <td class="num"><a href="/banking/review?account=${a.id}">${a.to_review}</a></td>
+                    <td class="num">${a.posted}</td>
+                    <td class="num">${formatMoney(a.gl_balance)}</td>
+                    <td class="num">${balanceCell(a.reported_balance)}${a.reported_balance_at ? `<br><small>as of ${escapeHtml(a.reported_balance_at)}</small>` : ''}</td>
+                    <td>${a.last_import_at === null ? '—' : escapeHtml(a.last_import_at.slice(0, 10))}</td>
+                    <td>
+                        <a class="btn small secondary" href="/banking/import?account=${a.id}">Import</a>
+                        <button class="btn small secondary" onclick="openEdit(${a.id})">Edit</button>
+                        ${a.deletable ? `<button class="btn small danger" onclick="deleteAccount(${a.id})">Delete</button>` : ''}
+                    </td>
+                </tr>`).join('');
+            }
+            status.textContent = eligible.length ? '' : 'Every bank GL account has a feed.';
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 10, e.message, true);
+        }
+    }
+
+    function openAdd() {
+        editingId = null;
+        document.getElementById('acctModalTitle').textContent = 'Add feed account';
+        document.getElementById('glGroup').hidden = false;
+        document.getElementById('glAccount').innerHTML = eligible.map((g) =>
+            `<option value="${g.id}">${escapeHtml(g.label)} (${g.kind === 'CREDIT' ? 'card' : 'checking'})</option>`).join('');
+        document.getElementById('acctName').value = '';
+        document.getElementById('acctMask').value = '';
+        document.getElementById('feedStart').value = '';
+        document.getElementById('acctError').hidden = true;
+        openModal('acctModal');
+    }
+
+    function openEdit(id) {
+        editingId = id;
+        const a = accounts.find((x) => x.id === id);
+        document.getElementById('acctModalTitle').textContent = `Edit ${a.name}`;
+        document.getElementById('glGroup').hidden = true;
+        document.getElementById('acctName').value = a.name;
+        document.getElementById('acctMask').value = a.mask ?? '';
+        document.getElementById('feedStart').value = a.feed_start_date;
+        document.getElementById('acctError').hidden = true;
+        openModal('acctModal');
+    }
+
+    async function saveAccount() {
+        const errorEl = document.getElementById('acctError');
+        const done = setBusy(document.getElementById('acctSaveBtn'), 'Saving...');
+        const payload = {
+            name: document.getElementById('acctName').value,
+            mask: document.getElementById('acctMask').value,
+            feed_start_date: document.getElementById('feedStart').value,
+        };
+        try {
+            if (editingId === null) {
+                payload.gl_account_id = Number(document.getElementById('glAccount').value);
+                await api('/api/banking/accounts', { method: 'POST', body: payload });
+            } else {
+                await api(`/api/banking/accounts/${editingId}`, { method: 'PATCH', body: payload });
+            }
+            closeModal('acctModal');
+            showSuccess(`Saved ${payload.name}.`);
+            load();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function deleteAccount(id) {
+        const a = accounts.find((x) => x.id === id);
+        if (!confirm(`Delete the feed account ${a.name}? Nothing has been imported into it.`)) return;
+        try {
+            await api(`/api/banking/accounts/${id}`, { method: 'DELETE' });
+            showSuccess(`Deleted ${a.name}.`);
+            load();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}
+
+<!-- EOF - banking_connections.html -->

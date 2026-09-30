@@ -134,7 +134,7 @@ def test_pnl_register_opening_restarts_each_fiscal_year(chart):
 
 def test_api_pages_render(signed_in):
     for path in ("/journal", "/journal/new", "/journal/registers", "/setup/accounts",
-                 "/setup/settings", "/reports/trial-balance", "/banking", "/invoices"):
+                 "/setup/settings", "/reports/trial-balance", "/banking/review", "/invoices"):
         assert signed_in.get(path).status_code == 200, path
     tb = signed_in.get("/api/reports/trial-balance?as_of=2026-06-30").get_json()
     assert tb["success"] and tb["report"]["balanced"]

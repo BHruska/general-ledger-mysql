@@ -44,9 +44,9 @@ Dashboard state read 2026-09-29 via dashboard_get_state (client 6abb0047c2237e00
 | Transactions enabled for US production | Link token creation fails with INVALID_PRODUCT without it | https://dashboard.plaid.com/settings/team/products | verified (production_by_country.US includes transactions; authorized_environments: sandbox, production) |
 | Register redirect URI `http://localhost:8001/connections/oauth-return` (sandbox) | Without it, OAuth banks (Chase is OAuth-only) are missing from Link or break mid-flow | https://dashboard.plaid.com/developers/api | needs_human (redirect_uris is empty) |
 | Register redirect URI `https://general-ledger.hruskagroup.com/connections/oauth-return` (production) | Same, for production; exact match required, no query or fragment | https://dashboard.plaid.com/developers/api | needs_human (redirect_uris is empty) |
-| Complete company profile and data-security questionnaire | Chase OAuth in production is gated on these; a gap shows as Chase silently absent from Link | https://dashboard.plaid.com/settings/company/profile | cannot_verify (not readable through the tools); start early, it can take weeks (TASK-009) |
+| Complete company profile and data-security questionnaire ("Verify business") | Gates Chase OAuth on paid plans. On the free Trial the dashboard says "No action is needed to access banks" | https://dashboard.plaid.com/onboarding-tasks | not_applicable while on Trial (owner saw "Free trial 0/10" and "Automatic bank access", 2026-09-30). Becomes needs_human only if Chase is missing from production Link on Trial, or on upgrading to a paid plan |
 | Confirm Data Transparency Messaging / Link customization is complete for production | Incomplete DTM makes `/link/token/create` fail with INVALID_LINK_CUSTOMIZATION | https://dashboard.plaid.com/link | cannot_verify (a `default` customization exists; completeness not readable) |
-| Confirm the monthly per-Item Transactions price on your plan | DESIGN §14 Q1: the number to compare against QuickBooks and SimpleFIN | https://dashboard.plaid.com/settings/team/billing | cannot_verify |
+| Confirm the monthly per-Item Transactions price on your plan | DESIGN §14 Q1: the number to compare against QuickBooks and SimpleFIN | https://dashboard.plaid.com/onboarding-tasks (shown on the last page before Submit request) | not_applicable while on Trial (free, 10 production Items). Plaid publishes no price; it appears only in the upgrade request. Subscription months are UTC calendar months and are not pro-rated |
 | Store sandbox and production client_id/secret per CREDENTIALS.md (tier 2, `/etc/general-ledger/plaid.enc`), separate per environment | Keys never go in code, logs or the transcript | https://dashboard.plaid.com/developers/keys | needs_human |
 | Webhook receiver URL | Not used by decision (see Decisions made) | — | not_applicable |
 
@@ -118,6 +118,12 @@ with sandbox credentials (`user_good` / `pass_good`, `user_transactions_dynamic`
 
 ## Decisions made
 
+- Plan: **free Trial** (10 production Items, no business verification needed for bank
+  access). Seen on the owner's dashboard 2026-09-30. Removing an Item does NOT return its
+  slot, so all development and testing runs in Sandbox, and Chase is linked in production
+  exactly once, from the finished app. Upgrade to Pay-as-you-go (verify business, submit
+  request) only if Chase is missing from production Link on Trial.
+
 - Product stack: transactions only. Confirmed by the owner 2026-09-29.
 - Sync trigger: **daily poll at 06:00 Central plus "Sync now"**, no webhook receiver.
   Confirmed by the owner 2026-09-29, per DESIGN §5.2 (the server accepts no inbound calls
@@ -140,5 +146,6 @@ with sandbox credentials (`user_good` / `pass_good`, `user_transactions_dynamic`
 - Money movement: none at first, "from there we shall see". Adding it later means an
   update-mode re-consent and a new product (auth or transfer). Re-run the Plaid scope step first.
 - Are Chase checking and the Ink card under one Chase login (one Item or two)? DESIGN §14 Q2.
-- Does Chase appear in production Link for this team? Depends on the company profile and
-  security questionnaire task above. DESIGN §14 Q1.
+- Does Chase appear in production Link for this team? The Trial's "Automatic bank access"
+  panel shows what looks like Chase's logo, so probably yes; confirmed only at the one
+  production link in phase 4. DESIGN §14 Q1.

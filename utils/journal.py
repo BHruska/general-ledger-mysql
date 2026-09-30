@@ -1,5 +1,5 @@
 """
-General Ledger v0.2.0
+General Ledger v0.3.0
 File: utils/journal.py
 Description: The accounting core (docs/DESIGN.md section 3). post_entry() is the ONLY
              code path that inserts journal_line rows, and it refuses anything that
@@ -18,7 +18,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 
 from db import SessionLocal
-from models import Account, JournalEntry, JournalLine, Settings
+from models import Account, BankAccount, BankTxn, JournalEntry, JournalLine, Settings
 from utils import audit
 from utils.errors import LedgerError, NotFound
 from utils.money import ZERO, parse_amount, parse_date, parse_optional_amount, to_str
@@ -172,12 +172,50 @@ def check_entry(session, entry_date: date, lines: list[LineInput], *, source: st
     if lock is not None and entry_date <= lock:
         check.problems.append(f"{entry_date} is on or before the lock date ({lock}).")
 
-    # A bank-feed posting must be tied to the bank line it came from, or the same line
-    # could be posted twice (DESIGN.md section 6). bank_txn arrives in phase 2; until
-    # then nothing may claim to be a BANK entry.
-    if source == "BANK" and not bank_txn_ids:
-        check.problems.append("A bank-feed entry must be linked to its bank line.")
+    if source == "BANK":
+        check.problems.extend(_bank_link_problems(session, lines, bank_txn_ids, accounts if ids else {},
+                                                  for_post))
     return check
+
+
+def _bank_link_problems(session, lines: list[LineInput], bank_txn_ids, accounts: dict,
+                        for_post: bool) -> list[str]:
+    """A bank-feed posting must be tied to the bank lines it came from (DESIGN.md 3.1).
+
+    The entry's lines on bank and card accounts must equal, account by account, the bank
+    lines it claims, and each of those must still be waiting in the queue. That is what
+    makes it impossible to post one bank line twice, or to post a bank line for an amount
+    the bank never showed.
+    """
+    if not bank_txn_ids:
+        return ["A bank-feed entry must be linked to its bank line."]
+    stmt = select(BankTxn).where(BankTxn.id.in_(set(bank_txn_ids)))
+    if for_post:
+        stmt = stmt.with_for_update()
+    txns = session.scalars(stmt).all()
+    problems = []
+    missing = set(bank_txn_ids) - {t.id for t in txns}
+    if missing:
+        problems.append(f"Bank line(s) {sorted(missing)} do not exist.")
+    for t in txns:
+        if t.status not in ("NEW", "SUGGESTED"):
+            problems.append(f"Bank line {t.id} is already {t.status.lower()}.")
+    gl_of = dict(session.execute(
+        select(BankAccount.id, BankAccount.gl_account_id)
+        .where(BankAccount.id.in_({t.bank_account_id for t in txns}))
+    ).all())
+    expected: dict[int, Decimal] = {}
+    for t in txns:
+        gl = gl_of[t.bank_account_id]
+        expected[gl] = expected.get(gl, ZERO) + t.amount
+    actual: dict[int, Decimal] = {}
+    for line in lines:
+        account = accounts.get(line.account_id)
+        if line.account_id in expected or (account is not None and account.is_bank_account):
+            actual[line.account_id] = actual.get(line.account_id, ZERO) + line.amount
+    if expected != actual:
+        problems.append("The entry's lines on bank and card accounts do not match the bank line(s) it posts.")
+    return problems
 
 
 def post_entry(session, *, entry_date: date, lines: list[LineInput], memo: str | None = None,
@@ -205,14 +243,25 @@ def post_entry(session, *, entry_date: date, lines: list[LineInput], memo: str |
     for n, line in enumerate(lines, start=1):
         session.add(JournalLine(entry_id=entry.id, line_no=n, account_id=line.account_id,
                                 amount=line.amount, memo=line.memo))
+    # Marked in the same flush as the lines: a bank line is POSTED exactly when the
+    # entry that posts it exists, never one without the other.
+    if source == "BANK":
+        for txn in session.scalars(select(BankTxn).where(BankTxn.id.in_(set(bank_txn_ids)))):
+            txn.status = "POSTED"
+            txn.entry_id = entry.id
     session.flush()
     session.refresh(entry)
     return entry
 
 
 def reverse_entry(session, entry_id: int, *, reversal_date: date | None = None,
-                  memo: str | None = None) -> JournalEntry:
-    """Post an entry negating every line of `entry_id`, and link the two. Does not commit."""
+                  memo: str | None = None,
+                  allow_sources: set[str] = REVERSIBLE_HERE) -> JournalEntry:
+    """Post an entry negating every line of `entry_id`, and link the two. Does not commit.
+
+    `allow_sources` is widened only by the module that owns a source's staging rows
+    (utils/bank_queue.py for BANK), which resets those rows in the same transaction.
+    """
     entry = session.execute(
         select(JournalEntry).where(JournalEntry.id == entry_id).with_for_update()
     ).scalar_one_or_none()
@@ -222,7 +271,7 @@ def reverse_entry(session, entry_id: int, *, reversal_date: date | None = None,
         raise JournalError([f"Entry {entry_id} was already reversed by entry {entry.reversed_by_entry_id}."])
     if entry.source == "REVERSAL":
         raise JournalError([f"Entry {entry_id} is itself a reversal; post a new entry instead."])
-    if entry.source not in REVERSIBLE_HERE:
+    if entry.source not in allow_sources:
         raise JournalError([f"A {entry.source} entry is reversed from its own page, not the journal."])
 
     lock = _lock_date(session, for_post=True)

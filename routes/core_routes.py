@@ -56,16 +56,9 @@ def dashboard_page():
 
 # Approved nav sections whose pages arrive in later phases (docs/DESIGN.md section 13).
 PLACEHOLDERS = {
-    "banking": ("Banking", "Bank lines, the review queue, reconciliation and connections.",
-                "Phase 2 brings Chase file import and the review queue; phase 4 the Plaid feed."),
     "invoices": ("Invoices", "Customer invoices, PDF by email, and Zelle payment matching.",
                  "Phase 5."),
 }
-
-
-@core_bp.route("/banking")
-def banking_page():
-    return _placeholder("banking")
 
 
 @core_bp.route("/invoices")

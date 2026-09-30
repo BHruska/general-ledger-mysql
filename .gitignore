@@ -11,3 +11,7 @@ __pycache__/
 .pytest_cache/
 # Chrome's crashpad writes this into whatever directory a browser was launched from.
 debug.log
+
+# Real bank downloads (Chase CSV/QFX) used to build and test the importer.
+# Real account data: never committed.
+.bankdata/

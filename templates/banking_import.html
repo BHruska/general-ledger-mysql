@@ -1,0 +1,188 @@
+<!--
+General Ledger v0.3.0
+File: templates/banking_import.html
+Description: Banking -> Import file. A three-step wizard: choose the account and a Chase
+             CSV, preview what would be added, then import. Nothing is written until
+             the last step, and re-importing a file adds nothing already there.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'banking' %}
+{% set active_sub = 'import' %}
+
+{% block page_title %}Import File{% endblock %}
+{% block page_subtitle %}Bring a Chase CSV download into the review queue.{% endblock %}
+
+{% block content %}
+<div class="section" id="wizard">
+    <div class="wizard-steps">
+        <div class="wizard-step active" data-step="0"><div class="step-number">1</div><div class="step-label">File</div></div>
+        <div class="wizard-step" data-step="1"><div class="step-number">2</div><div class="step-label">Preview</div></div>
+        <div class="wizard-step" data-step="2"><div class="step-number">3</div><div class="step-label">Done</div></div>
+    </div>
+
+    <div class="wizard-content active" data-step="0">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="bankAccount">Account</label>
+                <select id="bankAccount"><option value="">Loading...</option></select>
+            </div>
+            <div class="form-group">
+                <label for="fileInput">Chase CSV</label>
+                <input type="file" id="fileInput" accept=".csv,text/csv">
+                <small>On chase.com: the account's activity, the download icon, file type CSV.</small>
+            </div>
+        </div>
+        <div class="alert alert-error" id="step0Error" hidden></div>
+        <div class="form-actions">
+            <a class="btn danger" href="/banking/review">Cancel</a>
+            <button class="btn" id="previewBtn" onclick="runPreview()">Next: Preview</button>
+        </div>
+    </div>
+
+    <div class="wizard-content" data-step="1">
+        <div class="stat-grid">
+            <div class="stat-card"><div class="value" id="pNew">-</div><div class="label">New lines</div></div>
+            <div class="stat-card"><div class="value" id="pPresent">-</div><div class="label">Already imported</div></div>
+            <div class="stat-card"><div class="value" id="pBefore">-</div><div class="label">Before feed start</div></div>
+            <div class="stat-card"><div class="value" id="pTotal">-</div><div class="label">Net of new lines</div></div>
+        </div>
+        <p class="note" id="pSummary"></p>
+        <div class="alert alert-warning" id="pOverlap" hidden></div>
+        <div class="table-wrap">
+            <table class="compact">
+                <thead><tr><th>Date</th><th>Description</th><th>Chase category</th><th class="num">Amount</th></tr></thead>
+                <tbody id="pBody"></tbody>
+            </table>
+        </div>
+        <div class="alert alert-error" id="step1Error" hidden></div>
+        <div class="form-actions split">
+            <button class="btn secondary" onclick="wizardGo(0)">Back</button>
+            <div>
+                <a class="btn danger" href="/banking/review">Cancel</a>
+                <button class="btn success" id="importBtn" onclick="runImport()">Import</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="wizard-content" data-step="2">
+        <div class="alert alert-success" id="doneMessage"></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="resetWizard()">Import another file</button>
+            <a class="btn" href="/banking/review">Go to Review</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let fileText = null;
+    let fileName = null;
+
+    function readFile() {
+        const file = document.getElementById('fileInput').files[0];
+        if (!file) return Promise.reject(new Error('Choose a file.'));
+        fileName = file.name;
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(new Error('The file could not be read.'));
+            reader.readAsText(file);
+        });
+    }
+
+    function payload() {
+        return { bank_account_id: document.getElementById('bankAccount').value,
+                 content: fileText, filename: fileName };
+    }
+
+    async function runPreview() {
+        const errorEl = document.getElementById('step0Error');
+        errorEl.hidden = true;
+        const done = setBusy(document.getElementById('previewBtn'), 'Reading...');
+        try {
+            fileText = await readFile();
+            const { preview: p } = await api('/api/banking/import/preview', { method: 'POST', body: payload() });
+            document.getElementById('pNew').textContent = p.new;
+            document.getElementById('pPresent').textContent = p.already_present;
+            document.getElementById('pBefore').textContent = p.before_start;
+            document.getElementById('pTotal').textContent = formatSignedMoney(p.new_total);
+            document.getElementById('pSummary').textContent =
+                `${p.layout} for ${p.bank_account.name}: ${p.rows_in_file} rows, ${p.first_date} to ${p.last_date}. `
+                + `Lines before the feed start (${p.feed_start_date}) are skipped.`;
+            const overlap = document.getElementById('pOverlap');
+            overlap.hidden = p.overlaps_feed === 0;
+            overlap.textContent = `${p.overlaps_feed} line(s) fall on dates a live bank feed already covers and will be skipped, so nothing is counted twice.`;
+            const body = document.getElementById('pBody');
+            if (p.new === 0) {
+                tableMessage(body, 4, 'Nothing new to import.');
+            } else {
+                body.innerHTML = p.sample.map((r) => `<tr>
+                    <td>${escapeHtml(r.posted_date)}</td><td>${escapeHtml(r.description)}</td>
+                    <td>${r.category === null ? '—' : escapeHtml(r.category)}</td>
+                    <td class="num ${signClass(r.amount)}">${formatMoney(r.amount)}</td>
+                </tr>`).join('') + (p.new > p.sample.length
+                    ? `<tr><td colspan="4" class="empty">...and ${p.new - p.sample.length} more.</td></tr>` : '');
+            }
+            document.getElementById('importBtn').disabled = p.new === 0;
+            document.getElementById('importBtn').textContent = `Import ${p.new} line${p.new === 1 ? '' : 's'}`;
+            document.getElementById('step1Error').hidden = true;
+            wizardGo(1);
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function runImport() {
+        const errorEl = document.getElementById('step1Error');
+        const done = setBusy(document.getElementById('importBtn'), 'Importing...');
+        try {
+            const { result: r } = await api('/api/banking/import', { method: 'POST', body: payload() });
+            const skipped = r.already_present + r.before_start + r.overlaps_feed;
+            document.getElementById('doneMessage').textContent =
+                `Imported ${r.new} new line(s) into ${r.bank_account.name}`
+                + (skipped ? `; skipped ${skipped} (${r.already_present} already imported, `
+                  + `${r.before_start} before feed start, ${r.overlaps_feed} covered by a live feed).` : '.');
+            wizardGo(2);
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+            done();
+        }
+    }
+
+    function resetWizard() {
+        document.getElementById('fileInput').value = '';
+        fileText = null;
+        fileName = null;
+        document.getElementById('importBtn').disabled = false;
+        wizardGo(0);
+    }
+
+    async function init() {
+        const select = document.getElementById('bankAccount');
+        try {
+            const { accounts } = await api('/api/banking/accounts');
+            if (!accounts.length) {
+                select.innerHTML = '<option value="">No feed accounts - add one under Connections</option>';
+                document.getElementById('previewBtn').disabled = true;
+                return;
+            }
+            select.innerHTML = accounts.map((a) =>
+                `<option value="${a.id}">${escapeHtml(a.name)}${a.mask ? ` ··${escapeHtml(a.mask)}` : ''}</option>`).join('');
+            const preset = new URLSearchParams(window.location.search).get('account');
+            if (preset) select.value = preset;
+        } catch (e) {
+            select.innerHTML = '<option value="">Accounts failed to load</option>';
+            showError(e.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - banking_import.html -->

@@ -1,0 +1,365 @@
+<!--
+General Ledger v0.3.0
+File: templates/banking_review.html
+Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3). Each
+             bank line is posted to an account, split across several, or excluded with
+             a reason. Posted lines can be sent back: their entry is reversed, never
+             deleted.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'banking' %}
+{% set active_sub = 'review' %}
+{% block container_class %} wide{% endblock %}
+
+{% block page_title %}Bank Review{% endblock %}
+{% block page_subtitle %}Every bank line becomes a journal entry only after you post it.{% endblock %}
+
+{% block styles %}
+<style>
+    .container.wide { max-width: 1600px; }
+    td.desc { max-width: 420px; }
+    td.desc small { display: block; color: var(--text-faint); }
+    select.post-to { min-width: 220px; }
+    tr.has-changes td { background: #fff8e1; }
+    #splitTable input, #splitTable select { width: 100%; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <div class="section-actions">
+            <div class="segmented" id="viewFilter">
+                <button data-view="review" class="active" onclick="setView('review')">To review <span id="cReview"></span></button>
+                <button data-view="excluded" onclick="setView('excluded')">Excluded <span id="cExcluded"></span></button>
+                <button data-view="posted" onclick="setView('posted')">Posted <span id="cPosted"></span></button>
+            </div>
+            <select id="accountFilter" onchange="loadLines()"><option value="">All accounts</option></select>
+        </div>
+        <div class="section-actions">
+            <span class="status-line" id="linesStatus"></span>
+            <button class="btn secondary" id="refreshBtn" onclick="loadLines()">Refresh</button>
+            <a class="btn success" href="/banking/import">Import file</a>
+        </div>
+    </div>
+    <p class="note" id="viewNote"></p>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead id="linesHead"></thead>
+            <tbody id="linesBody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+<div class="modal-overlay" id="splitModal">
+    <div class="modal wide">
+        <h3 id="splitTitle">Split</h3>
+        <p class="note" id="splitLine"></p>
+        <div class="table-wrap">
+            <table class="compact" id="splitTable">
+                <thead><tr><th style="width: 45%;">Account</th><th class="num">Amount</th><th>Memo</th><th></th></tr></thead>
+                <tbody id="splitBody"></tbody>
+            </table>
+        </div>
+        <div class="form-actions" style="justify-content: space-between;">
+            <button class="btn secondary" onclick="addSplit()">+ Add split</button>
+            <strong id="splitRemaining"></strong>
+        </div>
+        <div class="alert alert-warning" id="splitProblems" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('splitModal')">Cancel</button>
+            <button class="btn success" id="splitPostBtn" onclick="postSplit()" disabled>Post split</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="excludeModal">
+    <div class="modal">
+        <h3 id="excludeTitle">Exclude line</h3>
+        <p class="note">An excluded line never reaches the books. It stays here, under Excluded, with its reason.</p>
+        <div class="form-group">
+            <label for="excludeReason">Reason</label>
+            <select id="excludeReasonPick" onchange="document.getElementById('excludeReason').value = this.value">
+                <option value="">Choose, or type below...</option>
+                <option>Duplicate</option><option>Personal, not business</option>
+                <option>Before cutover</option><option>Recorded another way</option>
+            </select>
+            <input type="text" id="excludeReason" maxlength="120" style="margin-top: 8px;">
+        </div>
+        <div class="alert alert-error" id="excludeError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('excludeModal')">Cancel</button>
+            <button class="btn danger" id="excludeBtn" onclick="confirmExclude()">Exclude</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let view = new URLSearchParams(window.location.search).get('view') || 'review';
+    let lines = [];
+    let accountOptions = '';
+    let activeLine = null;
+    let splitTimer = null;
+    let splitSeq = 0;
+
+    const NOTES = {
+        review: 'Choose an account and Post, or Split a line across several accounts. Card payments seen on both '
+              + 'checking and the card are matched as transfers in the next release; leave those lines here for now.',
+        excluded: 'Excluded lines never reach the books. Restore one to review it again.',
+        posted: 'Undo reverses the posted entry (both stay in the journal) and returns the line to review.',
+    };
+
+    function setView(v) {
+        view = v;
+        document.querySelectorAll('#viewFilter button').forEach((b) => b.classList.toggle('active', b.dataset.view === v));
+        history.replaceState(null, '', `?view=${v}`);
+        loadLines();
+    }
+
+    function header() {
+        const last = view === 'review' ? '<th>Post to</th><th></th>'
+                   : view === 'excluded' ? '<th>Reason</th><th></th>' : '<th>Posted to</th><th></th>';
+        document.getElementById('linesHead').innerHTML =
+            `<tr><th>Date</th><th>Account</th><th>Description</th><th class="num">Amount</th>${last}</tr>`;
+    }
+
+    function row(l) {
+        const common = `<td>${escapeHtml(l.posted_date)}</td>
+            <td>${escapeHtml(l.bank_account)}</td>
+            <td class="desc">${escapeHtml(l.description)}${l.provider_category ? `<small>${escapeHtml(l.provider_category)}</small>` : ''}</td>
+            <td class="num ${signClass(l.amount)}">${formatMoney(l.amount)}</td>`;
+        if (view === 'review') {
+            return `<tr data-id="${l.id}">${common}
+                <td><select class="post-to" id="postTo${l.id}" onchange="this.closest('tr').classList.toggle('has-changes', !!this.value)">
+                    <option value="">Choose an account...</option>${accountOptions}</select></td>
+                <td>
+                    <button class="btn small" onclick="postLine(${l.id}, this)">Post</button>
+                    <button class="btn small secondary" onclick="openSplit(${l.id})">Split</button>
+                    <button class="btn small secondary" onclick="openExclude(${l.id})">Exclude</button>
+                </td></tr>`;
+        }
+        if (view === 'excluded') {
+            return `<tr>${common}<td>${escapeHtml(l.excluded_reason ?? '')}</td>
+                <td><button class="btn small secondary" onclick="restoreLine(${l.id}, this)">Restore</button></td></tr>`;
+        }
+        const postedTo = l.posted_to === null ? '—' : l.posted_to.map(escapeHtml).join(', ');
+        return `<tr>${common}<td>${postedTo} <small>entry #${l.entry_id}</small></td>
+            <td><button class="btn small secondary" onclick="unpostLine(${l.id}, this)">Undo</button></td></tr>`;
+    }
+
+    async function loadLines() {
+        const body = document.getElementById('linesBody');
+        const status = document.getElementById('linesStatus');
+        const done = setBusy(document.getElementById('refreshBtn'), 'Refreshing...');
+        header();
+        document.getElementById('viewNote').textContent = NOTES[view];
+        status.textContent = 'Loading...';
+        try {
+            const params = new URLSearchParams({ view });
+            const acct = document.getElementById('accountFilter').value;
+            if (acct) params.set('bank_account_id', acct);
+            const data = await api('/api/banking/lines?' + params);
+            lines = data.lines;
+            document.getElementById('cReview').textContent = `(${data.counts.review})`;
+            document.getElementById('cExcluded').textContent = `(${data.counts.excluded})`;
+            document.getElementById('cPosted').textContent = `(${data.counts.posted})`;
+            if (!lines.length) {
+                tableMessage(body, 6, view === 'review' ? 'Nothing to review. Import a file to bring in new lines.'
+                                                          : `No ${view} lines.`);
+            } else {
+                body.innerHTML = lines.map(row).join('');
+            }
+            status.textContent = `${lines.length} line(s)${data.truncated ? ' (showing the newest 1000)' : ''} · `
+                + `updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            status.textContent = `Refresh failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 6, e.message, true);
+        } finally {
+            done();
+        }
+    }
+
+    function removeRow(id) {
+        lines = lines.filter((l) => l.id !== id);
+        const tr = document.querySelector(`tr[data-id="${id}"]`);
+        if (tr) tr.remove();
+        const count = document.getElementById('cReview');
+        if (!lines.length) tableMessage(document.getElementById('linesBody'), 6, 'Nothing left to review.');
+        count.textContent = `(${lines.length})`;
+    }
+
+    async function postLine(id, button) {
+        const line = lines.find((l) => l.id === id);
+        const accountId = document.getElementById(`postTo${id}`).value;
+        if (!accountId) { showWarning('Choose an account to post to first.'); return; }
+        const done = setBusy(button, 'Posting...');
+        try {
+            const r = await api(`/api/banking/lines/${id}/post`, {
+                method: 'POST',
+                body: { account_id: Number(accountId), memo: line.description },
+            });
+            showSuccess(`Posted as entry #${r.entry_id}.`);
+            removeRow(id);
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    // ---------- split
+    function splitRow(split = {}) {
+        return `<tr>
+            <td><select class="s-acct" oninput="scheduleSplitCheck()"><option value="">Choose an account...</option>${accountOptions}</select></td>
+            <td class="num"><input type="text" class="s-amt" inputmode="decimal" value="${escapeHtml(split.amount ?? '')}" oninput="scheduleSplitCheck()"></td>
+            <td><input type="text" class="s-memo" maxlength="255"></td>
+            <td><button class="btn small secondary" onclick="this.closest('tr').remove(); scheduleSplitCheck()">&times;</button></td>
+        </tr>`;
+    }
+
+    function addSplit() {
+        document.getElementById('splitBody').insertAdjacentHTML('beforeend', splitRow());
+        scheduleSplitCheck();
+    }
+
+    function openSplit(id) {
+        activeLine = lines.find((l) => l.id === id);
+        document.getElementById('splitTitle').textContent = `Split: ${activeLine.description}`;
+        document.getElementById('splitLine').textContent =
+            `${activeLine.posted_date} · ${activeLine.bank_account} · ${formatMoney(activeLine.amount)}. `
+            + 'Enter each portion as a positive amount; the portions must add up to the line.';
+        const body = document.getElementById('splitBody');
+        body.innerHTML = splitRow() + splitRow();
+        const chosen = document.getElementById(`postTo${id}`).value;
+        if (chosen) body.querySelector('.s-acct').value = chosen;
+        openModal('splitModal');
+        scheduleSplitCheck();
+    }
+
+    function splits() {
+        return [...document.querySelectorAll('#splitBody tr')].map((tr) => ({
+            account_id: tr.querySelector('.s-acct').value ? Number(tr.querySelector('.s-acct').value) : null,
+            amount: tr.querySelector('.s-amt').value,
+            memo: tr.querySelector('.s-memo').value,
+        })).filter((s) => s.account_id !== null || s.amount !== '');
+    }
+
+    function scheduleSplitCheck() {
+        document.getElementById('splitPostBtn').disabled = true;
+        clearTimeout(splitTimer);
+        splitTimer = setTimeout(runSplitCheck, 250);
+    }
+
+    async function runSplitCheck() {
+        const seq = ++splitSeq;
+        try {
+            const { check } = await api(`/api/banking/lines/${activeLine.id}/check`, { method: 'POST', body: { splits: splits() } });
+            if (seq !== splitSeq) return;
+            const rem = Number(check.remaining);
+            const el = document.getElementById('splitRemaining');
+            el.textContent = rem === 0 ? 'Fully assigned' : `${formatMoney(Math.abs(rem))} ${rem > 0 ? 'left to assign' : 'over'}`;
+            el.className = rem === 0 ? 'positive' : 'negative';
+            const problems = document.getElementById('splitProblems');
+            problems.hidden = check.ok;
+            problems.innerHTML = check.ok ? '' : '<ul>' + check.problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('') + '</ul>';
+            document.getElementById('splitPostBtn').disabled = !check.ok;
+        } catch (e) {
+            if (seq === splitSeq) document.getElementById('splitRemaining').textContent = `Check failed: ${e.message}`;
+        }
+    }
+
+    async function postSplit() {
+        const done = setBusy(document.getElementById('splitPostBtn'), 'Posting...');
+        try {
+            const r = await api(`/api/banking/lines/${activeLine.id}/post`, { method: 'POST', body: { splits: splits() } });
+            closeModal('splitModal');
+            showSuccess(`Posted as entry #${r.entry_id}.`);
+            removeRow(activeLine.id);
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            done();
+        }
+    }
+
+    // ---------- exclude / restore / undo
+    function openExclude(id) {
+        activeLine = lines.find((l) => l.id === id);
+        document.getElementById('excludeTitle').textContent = `Exclude: ${activeLine.description}`;
+        document.getElementById('excludeReason').value = '';
+        document.getElementById('excludeReasonPick').value = '';
+        document.getElementById('excludeError').hidden = true;
+        openModal('excludeModal');
+    }
+
+    async function confirmExclude() {
+        const errorEl = document.getElementById('excludeError');
+        const done = setBusy(document.getElementById('excludeBtn'), 'Excluding...');
+        try {
+            await api(`/api/banking/lines/${activeLine.id}/exclude`, {
+                method: 'POST', body: { reason: document.getElementById('excludeReason').value },
+            });
+            closeModal('excludeModal');
+            showSuccess('Line excluded.');
+            removeRow(activeLine.id);
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function restoreLine(id, button) {
+        const done = setBusy(button, 'Restoring...');
+        try {
+            await api(`/api/banking/lines/${id}/restore`, { method: 'POST', body: {} });
+            showSuccess('Line restored to review.');
+            loadLines();
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    async function unpostLine(id, button) {
+        const line = lines.find((l) => l.id === id);
+        if (!confirm(`Undo the posting of "${line.description}"? Entry #${line.entry_id} is reversed `
+                     + '(both stay in the journal) and the line returns to review.')) return;
+        const done = setBusy(button, 'Undoing...');
+        try {
+            const r = await api(`/api/banking/lines/${id}/unpost`, { method: 'POST', body: {} });
+            showSuccess(`Reversed as entry #${r.reversal_entry_id}; the line is back in review.`);
+            loadLines();
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    async function init() {
+        try {
+            const [{ accounts }, { accounts: feeds }] = await Promise.all([api('/api/accounts'), api('/api/banking/accounts')]);
+            // Bank and card accounts are left out: a line posted to another bank account is a
+            // transfer, which the matcher pairs with the other side (next release).
+            accountOptions = accounts.filter((a) => a.postable && !a.is_bank_account).map((a) =>
+                `<option value="${a.id}">${escapeHtml(a.number)} ${escapeHtml(a.name)}</option>`).join('');
+            const filter = document.getElementById('accountFilter');
+            filter.innerHTML = '<option value="">All accounts</option>' + feeds.map((f) =>
+                `<option value="${f.id}">${escapeHtml(f.name)}${f.mask ? ` ··${escapeHtml(f.mask)}` : ''}</option>`).join('');
+            const preset = new URLSearchParams(window.location.search).get('account');
+            if (preset) filter.value = preset;
+        } catch (e) {
+            showError(e.message);
+        }
+        setView(view);
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - banking_review.html -->

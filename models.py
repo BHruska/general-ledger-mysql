@@ -1,8 +1,9 @@
 """
-General Ledger v0.2.0
+General Ledger v0.3.0
 File: models.py
 Description: ORM models for docs/DESIGN.md section 4. Phase 1: settings, account,
-             payee, journal_entry, journal_line, audit_log.
+             payee, journal_entry, journal_line, audit_log. Phase 2a: bank_connection,
+             bank_account, bank_txn.
 """
 
 from datetime import date, datetime
@@ -120,6 +121,73 @@ class JournalLine(Base):
     cleared_recon_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     entry: Mapped[JournalEntry] = relationship(back_populates="lines")
+
+
+FEED_SOURCES = ("PLAID", "SIMPLEFIN", "FILE")
+BANK_TXN_STATUSES = ("NEW", "SUGGESTED", "POSTED", "EXCLUDED", "REMOVED")
+
+
+class BankConnection(Base):
+    """One Plaid Item, one SimpleFIN access URL, or the FILE pseudo-connection."""
+
+    __tablename__ = "bank_connection"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    provider: Mapped[str] = mapped_column(Enum(*FEED_SOURCES), nullable=False)
+    institution: Mapped[str] = mapped_column(String(100), nullable=False)
+    credential_ref: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    provider_item_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    sync_cursor: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        Enum("OK", "LOGIN_REQUIRED", "ERROR", "DISCONNECTED"), nullable=False, default="OK")
+    status_detail: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    consent_expires_at: Mapped[datetime | None] = mapped_column(utc_timestamp(), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(utc_timestamp(), nullable=True)
+    sync_requested_at: Mapped[datetime | None] = mapped_column(utc_timestamp(), nullable=True)
+
+
+class BankAccount(Base):
+    """One feed account = one GL bank account."""
+
+    __tablename__ = "bank_account"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    connection_id: Mapped[int] = mapped_column(ForeignKey("bank_connection.id"), nullable=False)
+    gl_account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), nullable=False, unique=True)
+    provider_account_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    kind: Mapped[str] = mapped_column(Enum("DEPOSITORY", "CREDIT"), nullable=False)
+    mask: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    feed_start_date: Mapped[date] = mapped_column(Date, nullable=False)
+    reported_balance: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    reported_balance_at: Mapped[datetime | None] = mapped_column(utc_timestamp(), nullable=True)
+
+
+class BankTxn(Base):
+    """A bank line awaiting review (DESIGN.md section 6). Only a human posts or excludes."""
+
+    __tablename__ = "bank_txn"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    bank_account_id: Mapped[int] = mapped_column(ForeignKey("bank_account.id"), nullable=False)
+    source: Mapped[str] = mapped_column(Enum(*FEED_SOURCES), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    posted_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # GL sign for the bank's own GL account: + debits it (DESIGN.md section 5.4).
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    merchant_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider_category: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    status: Mapped[str] = mapped_column(Enum(*BANK_TXN_STATUSES), nullable=False, default="NEW")
+    suggested_account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id"), nullable=True)
+    suggested_payee_id: Mapped[int | None] = mapped_column(ForeignKey("payee.id"), nullable=True)
+    suggested_rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    suggested_invoice_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    suggested_transfer_txn_id: Mapped[int | None] = mapped_column(ForeignKey("bank_txn.id"), nullable=True)
+    entry_id: Mapped[int | None] = mapped_column(ForeignKey("journal_entry.id"), nullable=True)
+    excluded_reason: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    raw_json: Mapped[dict] = mapped_column(JSON, nullable=False)
+    first_seen_at: Mapped[datetime] = mapped_column(utc_timestamp(), nullable=False)
 
 
 class AuditLog(Base):
