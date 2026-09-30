@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.4.4
+General Ledger v0.5.1
 File: templates/banking_review.html
 Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3). Each
              line arrives with a suggestion (rule, payee, history or transfer) already
@@ -81,6 +81,21 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
 </div>
 
 {% include "partials/_attachments.html" %}
+
+<div class="modal-overlay" id="payInvoiceModal">
+    <div class="modal wide">
+        <h3 id="payInvoiceTitle">Pay an invoice</h3>
+        <p class="note">Posting records the deposit as payment: debit the bank, credit Accounts Receivable. A deposit
+            larger than the invoice's balance is split instead, so the rest can go elsewhere.</p>
+        <div class="table-wrap">
+            <table class="compact">
+                <thead><tr><th>Invoice</th><th>Customer</th><th>Due</th><th class="num">Balance</th><th></th></tr></thead>
+                <tbody id="payInvoiceBody"></tbody>
+            </table>
+        </div>
+        <div class="form-actions"><button class="btn secondary" onclick="closeModal('payInvoiceModal')">Close</button></div>
+    </div>
+</div>
 {% include "partials/_account_picker.html" %}
 
 <div class="modal-overlay" id="excludeModal">
@@ -144,6 +159,9 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
             case 'HISTORY': return '<span class="chip">based on history</span>'
                 + (l.suggested_payee ? `<small>${escapeHtml(l.suggested_payee)}</small>` : '');
             case 'TRANSFER': return '<span class="chip success">transfer</span>';
+            case 'INVOICE': return '<span class="chip success">invoice</span>';
+            case 'INVOICE_AMOUNT': return '<span class="chip warning">invoice (amount only)</span>'
+                + '<small>Same amount as one open invoice; check the payer.</small>';
             case 'TRANSFER_WAITING': return '<span class="chip warning">waiting for the other side</span>';
             default: return l.suggested_payee ? `<small>${escapeHtml(l.suggested_payee)}</small>` : '';
         }
@@ -151,6 +169,7 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
 
     function reviewRow(l) {
         const common = rowCommon(l);
+        l.suggestion_invoice_ready = ['INVOICE', 'INVOICE_AMOUNT'].includes(l.suggestion_reason) && l.suggested_invoice;
         if (l.suggestion_reason === 'TRANSFER') {
             const o = l.transfer_with;
             return `<tr data-id="${l.id}">${common}
@@ -159,6 +178,17 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
                 <td><button class="btn small success" onclick="postTransfer(${l.id}, this)">Post transfer</button>
                     ${paperclip(l.attachments, `attachFor(${l.id})`)}
                     <button class="btn small secondary" onclick="openExclude(${l.id})">Exclude</button></td></tr>`;
+        }
+        if (l.suggestion_invoice_ready) {
+            const inv = l.suggested_invoice;
+            return `<tr data-id="${l.id}">${common}
+                <td class="wrap">Pays invoice <a href="/invoices/${inv.id}"><strong>${escapeHtml(inv.number)}</strong></a>
+                    <small>${escapeHtml(inv.customer)} · balance ${formatMoney(inv.balance)}</small></td>
+                <td class="why">${why(l)}</td>
+                <td><button class="btn small success" onclick="payInvoice(${l.id}, ${inv.id}, this)">Post payment</button>
+                    <button class="btn small secondary" onclick="openPayInvoice(${l.id})">Other invoice</button>
+                    <button class="btn small secondary" onclick="openSplit(${l.id})">Post instead</button>
+                    ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
         }
         if (l.suggestion_reason === 'RULE_EXCLUDE') {
             return `<tr data-id="${l.id}">${common}
@@ -179,6 +209,7 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
             <td>
                 <button class="btn small" onclick="postLine(${l.id}, this)">Post</button>
                 <button class="btn small secondary" onclick="openSplit(${l.id})">Split</button>
+                ${Number(l.amount) > 0 ? `<button class="btn small secondary" onclick="openPayInvoice(${l.id})">Pay invoice</button>` : ''}
                 <button class="btn small secondary" onclick="openExclude(${l.id})">Exclude</button>
                 ${paperclip(l.attachments, `attachFor(${l.id})`)}
             </td></tr>`;
@@ -355,6 +386,39 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         } catch (e) {
             showError(e.message);
             done();
+        }
+    }
+
+    // ---------- invoice payments
+    async function payInvoice(lineId, invoiceId, button) {
+        const done = setBusy(button, 'Posting...');
+        try {
+            const r = await api(`/api/banking/lines/${lineId}/post`, { method: 'POST', body: { invoice_id: invoiceId } });
+            closeModal('payInvoiceModal');
+            showSuccess(`Posted as payment of invoice ${r.invoice_number} (entry #${r.entry_id}).`);
+            loadLines();
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    async function openPayInvoice(lineId) {
+        const line = lines.find((l) => l.id === lineId);
+        document.getElementById('payInvoiceTitle').textContent =
+            `${formatMoney(line.amount)} on ${line.posted_date}: which invoice does it pay?`;
+        const body = document.getElementById('payInvoiceBody');
+        tableMessage(body, 5, 'Loading...');
+        openModal('payInvoiceModal');
+        try {
+            const { invoices } = await api('/api/invoices/open');
+            body.innerHTML = invoices.length ? invoices.map((i) => `<tr>
+                <td><strong>${escapeHtml(i.number)}</strong></td><td>${escapeHtml(i.customer)}</td>
+                <td>${escapeHtml(i.due_date)}</td><td class="num">${formatMoney(i.balance)}</td>
+                <td><button class="btn small success" onclick="payInvoice(${lineId}, ${i.id}, this)">Pay this</button></td>
+            </tr>`).join('') : '<tr><td colspan="5" class="empty">No open invoices.</td></tr>';
+        } catch (e) {
+            tableMessage(body, 5, e.message, true);
         }
     }
 

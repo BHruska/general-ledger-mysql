@@ -1,0 +1,264 @@
+<!--
+General Ledger v0.5.1
+File: templates/invoice_edit.html
+Description: Invoices -> New invoice (and edit a draft). Lines with quantity and rate; the
+             server computes every amount and the total on each change. Save keeps a
+             draft (no number, nothing posted); Issue numbers it and posts it.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'invoices' %}
+{% set active_sub = 'invoices' %}
+
+{% block page_title %}New Invoice{% endblock %}
+{% block page_subtitle %}A draft has no number and posts nothing until it is issued.{% endblock %}
+
+{% block styles %}
+<style>
+    #linesTable input, #linesTable select { width: 100%; }
+    #linesTable td.num input { text-align: right; }
+    #linesTable tfoot td { font-weight: 600; border-top: 2px solid var(--border); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="form-row">
+        <div class="form-group">
+            <label for="customer">Customer</label>
+            <select id="customer" oninput="scheduleCheck()"><option value="">Choose a customer...</option></select>
+            <small><a href="#" onclick="event.preventDefault(); openModal('customerModal')">+ New customer</a></small>
+        </div>
+        <div class="form-group">
+            <label for="terms">Terms</label>
+            <input type="text" id="terms" maxlength="40" placeholder="e.g. Upon Receipt, Net 15">
+        </div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label for="issueDate">Invoice date</label>
+            <input type="date" id="issueDate" oninput="scheduleCheck()">
+        </div>
+        <div class="form-group">
+            <label for="dueDate">Due date</label>
+            <input type="date" id="dueDate" oninput="scheduleCheck()">
+            <small id="dueHint">Leave empty to use the customer's payment terms.</small>
+        </div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2>Lines</h2>
+        <div class="section-actions"><button class="btn secondary" onclick="addLine()">+ Add line</button></div>
+    </div>
+    <div class="table-wrap">
+        <table class="compact" id="linesTable">
+            <thead><tr>
+                <th style="width: 42%;">Description</th><th class="num" style="width: 8%;">Qty</th>
+                <th class="num" style="width: 12%;">Rate</th><th class="num">Amount</th><th style="width: 22%;">Income account</th><th></th>
+            </tr></thead>
+            <tbody id="linesBody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+            <tfoot><tr><td colspan="3">Total</td><td class="num" id="total">—</td><td colspan="2"></td></tr></tfoot>
+        </table>
+    </div>
+    <div class="form-group" style="margin-top: 15px;">
+        <label for="memo">Note printed on the invoice (optional)</label>
+        <textarea id="memo" rows="2"></textarea>
+    </div>
+    <div class="alert alert-warning" id="problems" hidden></div>
+    <div class="form-actions split">
+        <button class="btn danger" id="deleteBtn" onclick="deleteDraft()" hidden>Delete draft</button>
+        <div>
+            <a class="btn secondary" href="/invoices">Cancel</a>
+            <button class="btn" id="saveBtn" onclick="save(false)" disabled>Save draft</button>
+            <button class="btn success" id="issueBtn" onclick="save(true)" disabled>Save and issue</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block modals %}
+{% include "partials/_account_picker.html" %}
+
+<div class="modal-overlay" id="customerModal">
+    <div class="modal">
+        <h3>New customer</h3>
+        <div class="form-group"><label for="cName">Name</label><input type="text" id="cName" maxlength="120"></div>
+        <div class="form-group"><label for="cEmail">Email</label><input type="email" id="cEmail" maxlength="255"></div>
+        <div class="form-group"><label for="cAddress">Billing address</label><textarea id="cAddress" rows="3"></textarea></div>
+        <div class="alert alert-error" id="cError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('customerModal')">Cancel</button>
+            <button class="btn success" id="cSaveBtn" onclick="createCustomer()">Add customer</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const invoiceId = {{ invoice_id | default(none) | tojson }};
+    let incomeOptions = '';
+    let defaultIncome = null;
+    let checkTimer = null, checkSeq = 0, lastOk = false;
+
+    function lineRow(l = {}) {
+        return `<tr>
+            <td><input type="text" class="desc" maxlength="255" value="${escapeHtml(l.description ?? '')}" oninput="scheduleCheck()"></td>
+            <td class="num"><input type="text" class="qty" inputmode="decimal" value="${escapeHtml(l.quantity ?? '1')}" oninput="scheduleCheck()"></td>
+            <td class="num"><input type="text" class="rate" inputmode="decimal" value="${escapeHtml(l.rate ?? '')}" oninput="scheduleCheck()"></td>
+            <td class="num amount">—</td>
+            <td><select class="acct" oninput="scheduleCheck()">${incomeOptions}</select></td>
+            <td><button class="btn small secondary" title="Remove line" onclick="this.closest('tr').remove(); scheduleCheck()">&times;</button></td>
+        </tr>`;
+    }
+
+    function addLine(l) {
+        const body = document.getElementById('linesBody');
+        body.insertAdjacentHTML('beforeend', lineRow(l));
+        const sel = body.lastElementChild.querySelector('.acct');
+        const acct = (l && l.income_account_id) || defaultIncome;
+        if (acct) sel.value = String(acct);
+        enhanceAccountSelect(sel);
+    }
+
+    function collect() {
+        return {
+            customer_id: document.getElementById('customer').value || null,
+            issue_date: document.getElementById('issueDate').value,
+            due_date: document.getElementById('dueDate').value || null,
+            terms: document.getElementById('terms').value,
+            memo: document.getElementById('memo').value,
+            lines: [...document.querySelectorAll('#linesBody tr')].map((tr) => ({
+                description: tr.querySelector('.desc').value,
+                quantity: tr.querySelector('.qty').value,
+                rate: tr.querySelector('.rate').value,
+                income_account_id: tr.querySelector('.acct').value ? Number(tr.querySelector('.acct').value) : null,
+            })),
+        };
+    }
+
+    function scheduleCheck() {
+        lastOk = false;
+        document.getElementById('saveBtn').disabled = true;
+        document.getElementById('issueBtn').disabled = true;
+        clearTimeout(checkTimer);
+        checkTimer = setTimeout(runCheck, 250);
+    }
+
+    async function runCheck() {
+        const seq = ++checkSeq;
+        try {
+            const { check } = await api('/api/invoices/check', { method: 'POST', body: collect() });
+            if (seq !== checkSeq) return;
+            // One amount per row, in order, computed by the server (null for a blank row).
+            [...document.querySelectorAll('#linesBody tr')].forEach((tr, i) => {
+                const amount = check.row_amounts[i];
+                tr.querySelector('.amount').textContent = amount === null || amount === undefined ? '—' : formatMoney(amount);
+            });
+            document.getElementById('total').textContent = formatMoney(check.total);
+            if (!document.getElementById('dueDate').value) {
+                document.getElementById('dueHint').textContent = `Due ${check.due_date} from the customer's payment terms.`;
+            }
+            const problems = document.getElementById('problems');
+            problems.hidden = check.ok;
+            problems.innerHTML = check.ok ? '' : '<strong>Not ready yet:</strong><ul>'
+                + check.problems.map((p) => `<li>${escapeHtml(p)}</li>`).join('') + '</ul>';
+            lastOk = check.ok;
+            document.getElementById('saveBtn').disabled = !check.ok;
+            document.getElementById('issueBtn').disabled = !check.ok;
+        } catch (e) {
+            if (seq === checkSeq) showError(`Check failed: ${e.message}`);
+        }
+    }
+
+    async function save(andIssue) {
+        if (!lastOk) return;
+        if (andIssue && !confirm('Issue this invoice? It gets the next invoice number and posts to the books '
+                                 + '(debit Accounts Receivable, credit income). After that it can only be voided.')) return;
+        const button = document.getElementById(andIssue ? 'issueBtn' : 'saveBtn');
+        const done = setBusy(button, andIssue ? 'Issuing...' : 'Saving...');
+        try {
+            const saved = invoiceId
+                ? await api(`/api/invoices/${invoiceId}`, { method: 'PUT', body: collect() })
+                : await api('/api/invoices', { method: 'POST', body: collect() });
+            const id = saved.invoice.id;
+            if (andIssue) await api(`/api/invoices/${id}/issue`, { method: 'POST', body: {} });
+            window.location.href = `/invoices/${id}`;
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    async function deleteDraft() {
+        if (!confirm('Delete this draft? Nothing was posted and no number was used.')) return;
+        try {
+            await api(`/api/invoices/${invoiceId}`, { method: 'DELETE' });
+            window.location.href = '/invoices';
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    async function createCustomer() {
+        const errorEl = document.getElementById('cError');
+        const done = setBusy(document.getElementById('cSaveBtn'), 'Adding...');
+        try {
+            const { customer } = await api('/api/customers', { method: 'POST', body: {
+                name: document.getElementById('cName').value, email: document.getElementById('cEmail').value,
+                address: document.getElementById('cAddress').value } });
+            const sel = document.getElementById('customer');
+            sel.insertAdjacentHTML('beforeend', `<option value="${customer.id}">${escapeHtml(customer.name)}</option>`);
+            sel.value = String(customer.id);
+            closeModal('customerModal');
+            scheduleCheck();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        } finally {
+            done();
+        }
+    }
+
+    async function init() {
+        try {
+            const [{ accounts }, { customers }, { settings }] = await Promise.all([
+                api('/api/accounts'), api('/api/customers'), api('/api/settings')]);
+            incomeOptions = accountOptionsHtml(accounts.filter((a) => a.type === 'INCOME'));
+            defaultIncome = settings.default_income_account_id;
+            document.getElementById('customer').innerHTML = '<option value="">Choose a customer...</option>'
+                + customers.filter((c) => c.is_active).map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+            document.getElementById('linesBody').innerHTML = '';
+            document.getElementById('issueDate').value = localDateISO();
+            if (invoiceId) {
+                const { invoice: i } = await api(`/api/invoices/${invoiceId}`);
+                if (i.status !== 'DRAFT') { window.location.href = `/invoices/${invoiceId}`; return; }
+                document.querySelector('.header h1').textContent = `Edit ${i.label}`;
+                const sel = document.getElementById('customer');
+                if (![...sel.options].some((o) => o.value === String(i.customer_id))) {
+                    sel.insertAdjacentHTML('beforeend', `<option value="${i.customer_id}">${escapeHtml(i.customer)}</option>`);
+                }
+                sel.value = String(i.customer_id);
+                document.getElementById('issueDate').value = i.issue_date;
+                document.getElementById('dueDate').value = i.due_date;
+                document.getElementById('terms').value = i.terms ?? '';
+                document.getElementById('memo').value = i.memo ?? '';
+                i.lines.forEach((l) => addLine({ ...l, rate: l.rate }));
+                document.getElementById('deleteBtn').hidden = false;
+            } else {
+                const preset = new URLSearchParams(window.location.search).get('customer');
+                if (preset) document.getElementById('customer').value = preset;
+                addLine();
+            }
+            scheduleCheck();
+        } catch (e) {
+            showError(e.message);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - invoice_edit.html -->

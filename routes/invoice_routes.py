@@ -1,7 +1,8 @@
 """
-General Ledger v0.5.0
+General Ledger v0.5.1
 File: routes/invoice_routes.py
-Description: Invoices and Customers pages and their JSON API, and the A/R aging report.
+Description: Invoices and Customers pages and their JSON API (drafts, issue, void, PDF),
+             and the A/R aging report.
 """
 
 import csv
@@ -10,9 +11,9 @@ from datetime import date
 
 from flask import Blueprint, Response, render_template, request
 
-from routes.api import envelope
+from routes.api import body, envelope
 from utils import invoices
-from utils.errors import LedgerError
+from utils.errors import LedgerError, NotFound
 from utils.money import parse_optional_date
 
 invoice_bp = Blueprint("invoices", __name__)
@@ -21,6 +22,27 @@ invoice_bp = Blueprint("invoices", __name__)
 @invoice_bp.route("/invoices")
 def invoices_page():
     return render_template("invoices.html")
+
+
+@invoice_bp.route("/invoices/new")
+def new_invoice_page():
+    return render_template("invoice_edit.html", invoice_id=None)
+
+
+@invoice_bp.route("/invoices/<int:invoice_id>/edit")
+def edit_invoice_page(invoice_id):
+    return render_template("invoice_edit.html", invoice_id=invoice_id)
+
+
+@invoice_bp.route("/invoices/<int:invoice_id>/pdf")
+def invoice_pdf(invoice_id):
+    try:
+        data, name = invoices.pdf_bytes(invoice_id)
+    except NotFound:
+        return Response("No such invoice.\n", status=404, mimetype="text/plain")
+    return Response(data, mimetype="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{name}"', "Cache-Control": "private, no-store",
+                             "X-Content-Type-Options": "nosniff"})
 
 
 @invoice_bp.route("/invoices/<int:invoice_id>")
@@ -49,6 +71,55 @@ def list_invoices():
 @envelope
 def get_invoice(invoice_id):
     return {"invoice": invoices.get_invoice(invoice_id)}
+
+
+@invoice_bp.route("/api/invoices", methods=["POST"])
+@envelope
+def create_invoice():
+    return {"invoice": invoices.save_draft(body())}
+
+
+@invoice_bp.route("/api/invoices/check", methods=["POST"])
+@envelope
+def check_invoice():
+    return {"check": invoices.check_draft(body())}
+
+
+@invoice_bp.route("/api/invoices/open", methods=["GET"])
+@envelope
+def open_invoices():
+    return {"invoices": invoices.open_invoices()}
+
+
+@invoice_bp.route("/api/invoices/<int:invoice_id>", methods=["PUT"])
+@envelope
+def update_invoice(invoice_id):
+    return {"invoice": invoices.save_draft(body(), invoice_id)}
+
+
+@invoice_bp.route("/api/invoices/<int:invoice_id>", methods=["DELETE"])
+@envelope
+def delete_invoice(invoice_id):
+    invoices.delete_draft(invoice_id)
+    return {}
+
+
+@invoice_bp.route("/api/invoices/<int:invoice_id>/issue", methods=["POST"])
+@envelope
+def issue_invoice(invoice_id):
+    return {"invoice": invoices.issue(invoice_id)}
+
+
+@invoice_bp.route("/api/invoices/<int:invoice_id>/void", methods=["POST"])
+@envelope
+def void_invoice(invoice_id):
+    return {"invoice": invoices.void(invoice_id)}
+
+
+@invoice_bp.route("/api/customers", methods=["POST"])
+@envelope
+def create_customer():
+    return {"customer": invoices.create_customer(body())}
 
 
 @invoice_bp.route("/api/customers", methods=["GET"])

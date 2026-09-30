@@ -1,7 +1,7 @@
 """
-General Ledger v0.2.0
+General Ledger v0.5.1
 File: utils/settings_manager.py
-Description: Company settings and the lock date (docs/DESIGN.md section 3.4). The lock
+Description: Company and invoice settings, and the lock date (docs/DESIGN.md section 3.4). The lock
              date is the only close: nothing on or before it is posted, edited or
              reversed. Moving it backwards needs a reason, which goes to audit_log.
 """
@@ -29,6 +29,12 @@ def serialize(s: Settings, accounts: dict[int, Account]) -> dict:
         "lock_date": s.lock_date.isoformat() if s.lock_date else None,
         "ar_account": label(s.ar_account_id),
         "retained_earnings_account": label(s.retained_earnings_account_id),
+        "zelle_recipient": s.zelle_recipient,
+        "zelle_display_name": s.zelle_display_name,
+        "default_income_account_id": s.default_income_account_id,
+        "default_income_account": label(s.default_income_account_id) if s.default_income_account_id else None,
+        # Read-only here: issuing an invoice advances it, and it never goes back.
+        "next_invoice_number": f"{s.invoice_prefix}{s.next_invoice_seq}",
     }
 
 
@@ -55,6 +61,22 @@ def update_company(data: dict) -> dict:
             address = (data.get("company_address") or "").strip() or None
             changes["company_address"] = (s.company_address, address)
             s.company_address = address
+        for key, limit in (("zelle_recipient", 120), ("zelle_display_name", 120)):
+            if key in data:
+                value = (data.get(key) or "").strip() or None
+                if value and len(value) > limit:
+                    raise LedgerError(f"{key.replace('_', ' ').capitalize()} is longer than {limit} characters.")
+                changes[key] = (getattr(s, key), value)
+                setattr(s, key, value)
+        if "default_income_account_id" in data:
+            value = data.get("default_income_account_id") or None
+            if value is not None:
+                account = session.get(Account, int(value))
+                if account is None or account.type != "INCOME":
+                    raise LedgerError("The default income account must be an income account.")
+                value = account.id
+            changes["default_income_account_id"] = (s.default_income_account_id, value)
+            s.default_income_account_id = value
         if "fiscal_year_start_month" in data:
             month = data.get("fiscal_year_start_month")
             if not isinstance(month, int) or isinstance(month, bool) or not 1 <= month <= 12:

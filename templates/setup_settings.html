@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.2.0
+General Ledger v0.5.1
 File: templates/setup_settings.html
 Description: Setup -> Settings. Company details, fiscal year, and the lock date - the
              only close (docs/DESIGN.md section 3.4).
@@ -30,11 +30,42 @@ Description: Setup -> Settings. Company details, fiscal year, and the lock date 
     <div class="form-group">
         <label for="companyAddress">Address</label>
         <textarea id="companyAddress" rows="3" oninput="markChanges()"></textarea>
-        <small>Printed on invoices (phase 5).</small>
+        <small>Printed at the top of every invoice.</small>
     </div>
     <p class="note" id="accountRefs"></p>
     <div class="form-actions">
         <button class="btn" id="companySaveBtn" onclick="saveCompany()" disabled>Save</button>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <h2>Invoices</h2>
+        <div class="section-actions"><span class="status-line" id="invoiceStatus"></span></div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label for="zelleRecipient">Zelle to (email or phone)</label>
+            <input type="text" id="zelleRecipient" maxlength="120" oninput="markInvoiceChanges()">
+        </div>
+        <div class="form-group">
+            <label for="zelleName">Name the customer's bank app shows</label>
+            <input type="text" id="zelleName" maxlength="120" oninput="markInvoiceChanges()">
+        </div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label for="defaultIncome">Default income account for invoice lines</label>
+            <select id="defaultIncome" onchange="markInvoiceChanges()"></select>
+        </div>
+        <div class="form-group">
+            <label>Next invoice number</label>
+            <input type="text" id="nextNumber" disabled>
+            <small>Advanced by issuing; never reused, even after a void.</small>
+        </div>
+    </div>
+    <div class="form-actions">
+        <button class="btn" id="invoiceSaveBtn" onclick="saveInvoiceSettings()" disabled>Save</button>
     </div>
 </div>
 
@@ -64,6 +95,10 @@ Description: Setup -> Settings. Company details, fiscal year, and the lock date 
 </div>
 {% endblock %}
 
+{% block modals %}
+{% include "partials/_account_picker.html" %}
+{% endblock %}
+
 {% block scripts %}
 <script>
     const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -90,8 +125,44 @@ Description: Setup -> Settings. Company details, fiscal year, and the lock date 
         document.getElementById('companySaveBtn').disabled = !changed;
     }
 
+    function markInvoiceChanges() {
+        const now = invoiceFields();
+        const changed = now.zelle_recipient !== (saved.zelle_recipient ?? '')
+            || now.zelle_display_name !== (saved.zelle_display_name ?? '')
+            || String(now.default_income_account_id ?? '') !== String(saved.default_income_account_id ?? '');
+        document.getElementById('invoiceSaveBtn').disabled = !changed;
+    }
+
+    function invoiceFields() {
+        const income = document.getElementById('defaultIncome').value;
+        return {
+            zelle_recipient: document.getElementById('zelleRecipient').value.trim(),
+            zelle_display_name: document.getElementById('zelleName').value.trim(),
+            default_income_account_id: income ? Number(income) : null,
+        };
+    }
+
+    async function saveInvoiceSettings() {
+        const done = setBusy(document.getElementById('invoiceSaveBtn'), 'Saving...');
+        try {
+            show((await api('/api/settings', { method: 'PATCH', body: invoiceFields() })).settings);
+            showSuccess('Invoice settings saved.');
+        } catch (e) {
+            showError(e.message);
+        } finally {
+            done();
+            markInvoiceChanges();
+        }
+    }
+
     function show(s) {
         saved = s;
+        document.getElementById('zelleRecipient').value = s.zelle_recipient ?? '';
+        document.getElementById('zelleName').value = s.zelle_display_name ?? '';
+        document.getElementById('nextNumber').value = s.next_invoice_number;
+        const income = document.getElementById('defaultIncome');
+        income.value = s.default_income_account_id === null ? '' : String(s.default_income_account_id);
+        syncPicker(income);
         document.getElementById('companyName').value = s.company_name;
         document.getElementById('companyAddress').value = s.company_address ?? '';
         document.getElementById('fyMonth').value = String(s.fiscal_year_start_month);
@@ -106,6 +177,10 @@ Description: Setup -> Settings. Company details, fiscal year, and the lock date 
         document.getElementById('fyMonth').innerHTML =
             MONTHS.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
         try {
+            const { accounts } = await api('/api/accounts');
+            const income = document.getElementById('defaultIncome');
+            income.innerHTML = '<option value="">None</option>' + accountOptionsHtml(accounts.filter((a) => a.type === 'INCOME'));
+            enhanceAccountSelect(income);
             show((await api('/api/settings')).settings);
         } catch (e) {
             document.getElementById('companyStatus').textContent = `Load failed: ${e.message}`;

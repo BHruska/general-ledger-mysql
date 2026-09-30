@@ -48,8 +48,13 @@ all suggested"; receipts; the type-to-search account picker. Invoicing was moved
 phase 3 by the owner (2026-09-30): step A is done (tables, `manage.py import-qbo-invoices`
 history with payments matched oldest-first, Invoices / Customers / A/R Aging pages). QuickBooks
 history never posts: its income reaches this ledger once, through the opening balances.
-Next: invoicing step B (create, issue, void, PDF, deposits suggesting the invoice they pay),
-then phase 3. Keyboard shortcuts are deferred (docs/BACKLOG.md).
+Invoicing step B is done too: drafts (no number until issued), issue (next number under a
+row lock; Dr A/R / Cr income; the PDF as sent is kept under /data/invoices), void (a
+reversal; the number is kept), and deposits matched to open invoices in Review (number in
+the text, or amount + customer name; amount alone is the weaker INVOICE_AMOUNT) and posted
+Dr bank / Cr A/R with an invoice_payment row. Emailing invoices waits on an SMTP account
+(DESIGN.md §14 question 8). Next: phase 3 (reports, opening balances, cutover). Keyboard
+shortcuts are deferred (docs/BACKLOG.md).
 Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
 
 Real Chase downloads live in `.bankdata/` (gitignored — real account data, never

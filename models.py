@@ -189,7 +189,7 @@ class BankTxn(Base):
     suggested_account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id"), nullable=True)
     suggested_payee_id: Mapped[int | None] = mapped_column(ForeignKey("payee.id"), nullable=True)
     suggested_rule_id: Mapped[int | None] = mapped_column(ForeignKey("payee_rule.id"), nullable=True)
-    suggested_invoice_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    suggested_invoice_id: Mapped[int | None] = mapped_column(ForeignKey("invoice.id"), nullable=True)
     suggested_transfer_txn_id: Mapped[int | None] = mapped_column(ForeignKey("bank_txn.id"), nullable=True)
     # Where the suggestion came from: RULE, RULE_EXCLUDE, PAYEE, HISTORY, TRANSFER,
     # TRANSFER_WAITING (a card payment whose other side has not arrived yet).
@@ -245,7 +245,8 @@ class Invoice(Base):
     __tablename__ = "invoice"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    number: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    # Assigned on issue; a draft has none, so the sequence never skips or reuses a number.
+    number: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
     customer_id: Mapped[int] = mapped_column(ForeignKey("payee.id"), nullable=False)
     issue_date: Mapped[date] = mapped_column(Date, nullable=False)
     due_date: Mapped[date] = mapped_column(Date, nullable=False)

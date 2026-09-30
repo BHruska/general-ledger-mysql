@@ -33,7 +33,10 @@ Description: Invoices -> Invoices. Every invoice, QuickBooks history included, f
             </div>
             <select id="customerFilter" onchange="load()"><option value="">All customers</option></select>
         </div>
-        <div class="section-actions"><span class="status-line" id="invStatus"></span></div>
+        <div class="section-actions">
+            <span class="status-line" id="invStatus"></span>
+            <a class="btn success" href="/invoices/new">+ New invoice</a>
+        </div>
     </div>
     <div class="table-scroll">
         <table class="compact">
@@ -78,7 +81,7 @@ Description: Invoices -> Invoices. Every invoice, QuickBooks history included, f
                 tableMessage(body, 8, 'No invoices match.');
             } else {
                 body.innerHTML = data.invoices.map((i) => `<tr>
-                    <td><a href="/invoices/${i.id}"><strong>${escapeHtml(i.number)}</strong></a></td>
+                    <td><a href="/invoices/${i.id}"><strong>${escapeHtml(i.label)}</strong></a></td>
                     <td>${escapeHtml(i.issue_date)}</td>
                     <td>${escapeHtml(i.customer)}</td>
                     <td>${escapeHtml(i.due_date)}</td>

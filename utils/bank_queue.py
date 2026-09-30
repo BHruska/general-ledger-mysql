@@ -1,5 +1,5 @@
 """
-General Ledger v0.4.0
+General Ledger v0.5.1
 File: utils/bank_queue.py
 Description: The review queue (docs/DESIGN.md section 6). Every bank line becomes a
              journal entry only after a person posts it, splits it, or excludes it.
@@ -16,8 +16,8 @@ from decimal import Decimal
 from sqlalchemy import func, select
 
 from db import SessionLocal
-from models import Account, BankAccount, BankTxn, JournalLine, Payee, PayeeRule
-from utils import attachments, audit, journal, rules, suggest
+from models import Account, BankAccount, BankTxn, Invoice, JournalLine, Payee, PayeeRule, Settings
+from utils import attachments, audit, invoices, journal, rules, suggest
 from utils.errors import LedgerError, NotFound
 from utils.journal import JournalError, LineInput
 from utils.money import ZERO, parse_amount, to_str
@@ -50,6 +50,7 @@ def _serialize(t: BankTxn, ba: BankAccount, ctx: dict) -> dict:
         "suggested_payee_id": t.suggested_payee_id,
         "suggested_payee": ctx["payees"].get(t.suggested_payee_id) if t.suggested_payee_id else None,
         "suggested_rule": rule.pattern if rule else None,
+        "suggested_invoice": ctx["invoices"].get(t.suggested_invoice_id) if t.suggested_invoice_id else None,
         "transfer_with": {
             "id": other.id, "bank_account": ctx["banks"][other.bank_account_id],
             "posted_date": other.posted_date.isoformat(), "description": other.description,
@@ -101,7 +102,14 @@ def list_lines(view: str = "review", bank_account_id: int | None = None) -> dict
             "rules": {r.id: r for r in session.scalars(select(PayeeRule))},
             "txns": {t.id: t for t in session.scalars(select(BankTxn).where(BankTxn.id.in_(pair_ids or {0})))},
             "attachments": attachments.counts(session, bank_txn_ids=[t.id for t, _ in rows]),
+            "invoices": {},
         }
+        invoice_ids = {t.suggested_invoice_id for t, _ in rows if t.suggested_invoice_id}
+        if invoice_ids:
+            for inv in session.scalars(select(Invoice).where(Invoice.id.in_(invoice_ids))):
+                ctx["invoices"][inv.id] = {"id": inv.id, "number": inv.number, "balance": to_str(inv.balance),
+                                           "customer": ctx["payees"].get(inv.customer_id)
+                                           or session.get(Payee, inv.customer_id).name}
 
         counts = dict(session.execute(
             select(BankTxn.status, func.count()).group_by(BankTxn.status)).all())
@@ -197,10 +205,35 @@ def _touch_payee(session, payee_id: int | None, when) -> None:
     payee.is_active = True
 
 
+def _post_invoice_payment(session, txn: BankTxn, invoice_id) -> dict:
+    """A deposit that pays an invoice: Dr the bank, Cr A/R, and an invoice_payment row
+    (DESIGN.md 8.4). The whole deposit must go to the invoice; a deposit covering more
+    than its balance is split instead."""
+    if txn.amount <= 0:
+        raise LedgerError("Only money received can pay an invoice.")
+    inv = session.get(Invoice, int(invoice_id))
+    if inv is None:
+        raise NotFound(f"Invoice {invoice_id} does not exist.")
+    ba = session.get(BankAccount, txn.bank_account_id)
+    settings = session.get(Settings, 1)
+    customer = session.get(Payee, inv.customer_id)
+    entry = journal.post_entry(
+        session, entry_date=txn.posted_date, source="BANK", payee_id=inv.customer_id, bank_txn_ids=[txn.id],
+        memo=f"Payment of invoice {inv.number} - {customer.name}"[:journal.MEMO_MAX],
+        lines=[LineInput(ba.gl_account_id, txn.amount, None),
+               LineInput(settings.ar_account_id, -txn.amount, f"Invoice {inv.number}")])
+    invoices.apply_payment(session, inv.id, entry.id, txn.posted_date, txn.amount)
+    _touch_payee(session, inv.customer_id, txn.posted_date)
+    return {"entry_id": entry.id, "txn_id": txn.id, "invoice_id": inv.id, "invoice_number": inv.number,
+            "remembered": None}
+
+
 def _post(session, txn: BankTxn, data: dict) -> dict:
     """Post one line inside the caller's transaction."""
     if txn.status not in REVIEWABLE:
         raise LedgerError(f"Bank line {txn.id} is already {txn.status.lower()}.")
+    if data.get("invoice_id"):
+        return _post_invoice_payment(session, txn, data["invoice_id"])
     if txn.suggestion_reason == "TRANSFER" and not data.get("splits") and not data.get("account_id"):
         return _post_transfer(session, txn)
     lines, problems, _ = _entry_lines(session, txn, data)
@@ -283,7 +316,12 @@ def post_suggested(bank_account_id: int | None = None) -> dict:
                     _exclude(session, txn, f"Rule: {rule.pattern}"[:REASON_MAX] if rule else "Rule")
                     excluded += 1
                     continue
-                data = {} if txn.suggestion_reason == "TRANSFER" else {"account_id": txn.suggested_account_id}
+                if txn.suggestion_reason == "TRANSFER":
+                    data = {}
+                elif txn.suggestion_reason in ("INVOICE", "INVOICE_AMOUNT"):
+                    data = {"invoice_id": txn.suggested_invoice_id}
+                else:
+                    data = {"account_id": txn.suggested_account_id}
                 result = _post(session, txn, data)
                 done.update(i for i in (result["txn_id"], result.get("transfer_txn_id")) if i)
                 posted += 1
@@ -344,10 +382,14 @@ def unpost(txn_id: int) -> dict:
         for t in returned:
             t.status = "NEW"
             t.entry_id = None
+        # A payment of an invoice goes back off the invoice with it.
+        reopened = invoices.remove_payments_for_entry(session, entry_id)
         audit.record(session, "bank_txn.unpost", "journal_entry", entry_id,
-                     {"reversal_entry_id": reversal.id, "bank_txn_ids": [t.id for t in returned]})
+                     {"reversal_entry_id": reversal.id, "bank_txn_ids": [t.id for t in returned],
+                      "invoices_reopened": reopened})
         suggest.run(session)
-        return {"reversal_entry_id": reversal.id, "returned": [t.id for t in returned]}
+        return {"reversal_entry_id": reversal.id, "returned": [t.id for t in returned],
+                "invoices_reopened": reopened}
 
 
 def _similar(session, txn: BankTxn) -> tuple[str, list[BankTxn]]:

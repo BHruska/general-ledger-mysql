@@ -1,5 +1,5 @@
 """
-General Ledger v0.4.0
+General Ledger v0.5.1
 File: utils/suggest.py
 Description: Suggestions for bank lines in review (docs/DESIGN.md sections 6.3-6.4).
              Suggestions only: nothing here posts, and only a person moves a line to
@@ -10,7 +10,11 @@ Strongest first, and the first that applies wins:
   TRANSFER   a card payment seen on both feeds: equal and opposite amounts within five
              days, one side looking like a card payment (or matching a TRANSFER rule).
              With only one side in, TRANSFER_WAITING: the line waits rather than posts.
+  INVOICE    a deposit paying an open invoice (DESIGN.md 8.4): its number is in the text,
+             or the amount is the balance and the customer's name is in the text.
   RULE       the owner's payee rules, in priority order.
+  INVOICE_AMOUNT  a deposit equal to exactly one open invoice's balance, nothing else
+             pointing anywhere: the weaker match, and labelled so.
   PAYEE      an ACTIVE payee's name found in the bank text; its default account.
   HISTORY    the account most used in the last twelve months for the same bank text.
 
@@ -26,7 +30,7 @@ from datetime import date, timedelta
 from sqlalchemy import select
 
 from db import SessionLocal
-from models import Account, BankAccount, BankTxn, JournalLine, Payee, PayeeRule
+from models import Account, BankAccount, BankTxn, Invoice, JournalLine, Payee, PayeeRule
 
 REVIEWABLE = ("NEW", "SUGGESTED")
 TRANSFER_WINDOW = timedelta(days=5)
@@ -103,6 +107,7 @@ class Suggestion:
     payee_id: int | None = None
     rule_id: int | None = None
     transfer_txn_id: int | None = None
+    invoice_id: int | None = None
 
 
 class Suggester:
@@ -123,6 +128,36 @@ class Suggester:
                 self.payees.append((len(name), p, rx))
         self.payees.sort(key=lambda t: -t[0])  # the longest (most specific) name wins
         self.history = self._history((today or date.today()) - HISTORY_WINDOW)
+        self.deposit_accounts = set(session.scalars(select(BankAccount.id).where(BankAccount.kind == "DEPOSITORY")))
+        self.open_invoices = []
+        customers = {p.id: p for p in session.scalars(select(Payee).where(Payee.is_customer.is_(True)))}
+        for inv in session.scalars(select(Invoice).where(Invoice.status == "OPEN")):
+            if inv.balance > 0 and inv.number:
+                name = normalise(customers[inv.customer_id].name) if inv.customer_id in customers else ""
+                self.open_invoices.append((inv, name))
+
+    def _invoice_for(self, txn: BankTxn) -> Suggestion | None:
+        """DESIGN.md 8.4. Only money into a checking account pays an invoice."""
+        if txn.amount <= 0 or txn.bank_account_id not in self.deposit_accounts or not self.open_invoices:
+            return None
+        text = normalise(txn.description)
+        for inv, _ in self.open_invoices:  # 2. the customer used the memo
+            if re.search(r"(?<![0-9a-z])" + re.escape(normalise(inv.number)) + r"(?![0-9a-z])", text) \
+                    and txn.amount <= inv.balance:
+                return Suggestion("INVOICE", payee_id=inv.customer_id, invoice_id=inv.id)
+        for inv, name in self.open_invoices:  # 1. amount and sender name
+            if inv.balance == txn.amount and name and name in text:
+                return Suggestion("INVOICE", payee_id=inv.customer_id, invoice_id=inv.id)
+        return None
+
+    def _invoice_by_amount(self, txn: BankTxn) -> Suggestion | None:
+        """3. The weaker match: the amount equals exactly one open invoice's balance."""
+        if txn.amount <= 0 or txn.bank_account_id not in self.deposit_accounts:
+            return None
+        same = [inv for inv, _ in self.open_invoices if inv.balance == txn.amount]
+        if len(same) == 1:
+            return Suggestion("INVOICE_AMOUNT", payee_id=same[0].customer_id, invoice_id=same[0].id)
+        return None
 
     def _history(self, since: date) -> dict[str, Counter]:
         bank_gl = set(self.session.scalars(select(BankAccount.gl_account_id)))
@@ -143,12 +178,18 @@ class Suggester:
         return account_id if account_id in self.postable else None
 
     def for_line(self, txn: BankTxn) -> Suggestion | None:
+        strong = self._invoice_for(txn)
+        if strong:
+            return strong
         for rule in self.rules:
             if rule.action == "TRANSFER" or not rule_matches(rule, txn):
                 continue
             if rule.action == "EXCLUDE":
                 return Suggestion("RULE_EXCLUDE", rule_id=rule.id, payee_id=rule.payee_id)
             return Suggestion("RULE", self._usable(rule.account_id), rule.payee_id, rule.id)
+        weak = self._invoice_by_amount(txn)
+        if weak:
+            return weak
         if is_anonymous(txn):
             return None  # only a rule the owner wrote may speak for a check
         text = normalise(txn.description)
@@ -210,10 +251,12 @@ def run(session, today: date | None = None) -> dict:
         t.suggested_payee_id = s.payee_id if s else None
         t.suggested_rule_id = s.rule_id if s else None
         t.suggested_transfer_txn_id = s.transfer_txn_id if s else None
+        t.suggested_invoice_id = s.invoice_id if s else None
         t.suggestion_reason = s.reason if s else None
         # SUGGESTED means "one click posts (or excludes) it"; a line with nothing
         # actionable stays NEW even when a payee was recognised.
-        actionable = s is not None and (s.account_id or s.reason in ("TRANSFER", "RULE_EXCLUDE"))
+        actionable = s is not None and (s.account_id or s.invoice_id
+                                        or s.reason in ("TRANSFER", "RULE_EXCLUDE"))
         t.status = "SUGGESTED" if actionable else "NEW"
         counts[s.reason if s else "NONE"] += 1
     return {"lines": len(lines), "suggested": sum(1 for t in lines if t.status == "SUGGESTED"),

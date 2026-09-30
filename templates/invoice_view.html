@@ -1,7 +1,8 @@
 <!--
-General Ledger v0.5.0
+General Ledger v0.5.1
 File: templates/invoice_view.html
-Description: One invoice: customer, lines, totals and payments.
+Description: One invoice: customer, lines, totals and payments, and what can be done
+             with it (edit or issue a draft, void an open one, download the PDF).
 -->
 {% extends "base.html" %}
 {% set active_nav = 'invoices' %}
@@ -16,6 +17,7 @@ Description: One invoice: customer, lines, totals and payments.
         <h2 id="invTitle">Invoice</h2>
         <div class="section-actions">
             <span id="invChips"></span>
+            <span id="invActions"></span>
             <a class="btn secondary" href="/invoices">Back to invoices</a>
         </div>
     </div>
@@ -55,8 +57,17 @@ Description: One invoice: customer, lines, totals and payments.
         try {
             const { invoice: i } = await api(`/api/invoices/${invoiceId}`);
             document.title = document.title.replace('Invoice', `Invoice ${i.number}`);
-            document.querySelector('.header h1').textContent = `Invoice ${i.number}`;
-            document.getElementById('invTitle').textContent = `${i.number} · ${i.customer}`;
+            document.getElementById('invTitle').textContent = `${i.label} · ${i.customer}`;
+            document.querySelector('.header h1').textContent = i.number ? `Invoice ${i.number}` : i.label;
+            const actions = [`<a class="btn secondary" href="/invoices/${i.id}/pdf" target="_blank" rel="noopener">PDF</a>`];
+            if (i.status === 'DRAFT') {
+                actions.push(`<a class="btn secondary" href="/invoices/${i.id}/edit">Edit</a>`,
+                             `<button class="btn success" onclick="issueInvoice(this)">Issue</button>`);
+            }
+            if (i.status === 'OPEN' && i.source === 'LEDGER' && Number(i.amount_paid) === 0) {
+                actions.push(`<button class="btn danger" onclick="voidInvoice(this)">Void</button>`);
+            }
+            document.getElementById('invActions').innerHTML = actions.join(' ');
             document.getElementById('invChips').innerHTML =
                 `<span class="chip ${i.status === 'PAID' ? 'success' : i.status === 'OPEN' ? 'info' : ''}">${escapeHtml(i.status)}</span>`
                 + (i.overdue ? ' <span class="chip warning">OVERDUE</span>' : '')
@@ -89,6 +100,33 @@ Description: One invoice: customer, lines, totals and payments.
         } catch (e) {
             showError(e.message);
             tableMessage(document.getElementById('linesBody'), 5, e.message, true);
+        }
+    }
+
+    async function issueInvoice(button) {
+        if (!confirm('Issue this invoice? It gets the next invoice number and posts to the books '
+                     + '(debit Accounts Receivable, credit income). After that it can only be voided.')) return;
+        const done = setBusy(button, 'Issuing...');
+        try {
+            const { invoice } = await api(`/api/invoices/${invoiceId}/issue`, { method: 'POST', body: {} });
+            showSuccess(`Issued as invoice ${invoice.number}.`);
+            load();
+        } catch (e) {
+            showError(e.message);
+            done();
+        }
+    }
+
+    async function voidInvoice(button) {
+        if (!confirm('Void this invoice? Its posting is reversed; the invoice and its number stay, marked VOID.')) return;
+        const done = setBusy(button, 'Voiding...');
+        try {
+            await api(`/api/invoices/${invoiceId}/void`, { method: 'POST', body: {} });
+            showSuccess('Invoice voided.');
+            load();
+        } catch (e) {
+            showError(e.message);
+            done();
         }
     }
 
