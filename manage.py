@@ -110,6 +110,29 @@ def cmd_import_qbo_payees(args) -> int:
     return 0
 
 
+def cmd_import_qbo_invoices(args) -> int:
+    import json
+    from datetime import date
+
+    from utils.errors import LedgerError
+    from utils.migration import qbo_invoices
+
+    try:
+        files = [_read(p) for p in (args.sales, args.payments, args.open, args.customers)]
+        if not args.apply:
+            print(json.dumps(qbo_invoices.preview(*files), indent=1))
+            print("\nNothing written. Re-run with --apply to import.")
+            return 0
+        s = qbo_invoices.apply(*files, active_since=date.fromisoformat(args.active_since),
+                               income_account_number=args.income_account, replace=args.replace)
+    except (LedgerError, OSError, ValueError) as e:
+        print(f"Not imported: {e}", file=sys.stderr)
+        return 1
+    print(f"Imported {s['invoices']} invoices ({s['lines']} lines, {s['customers']} customers); "
+          f"open {s['open_total']}; next number {s['next_number']}.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="General Ledger administration.")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -130,6 +153,19 @@ def main() -> int:
     pay.add_argument("--replace", action="store_true", help="replace existing, unreferenced payees")
     pay.add_argument("--apply", action="store_true", help="write it; without this, only preview")
     pay.set_defaults(func=cmd_import_qbo_payees)
+    inv = sub.add_parser("import-qbo-invoices",
+                         help="invoice history from QBO: Sales by Product/Service Detail, Invoices and "
+                              "Received Payments, Open Invoices, Customer Contact List (CSV)")
+    inv.add_argument("sales")
+    inv.add_argument("payments")
+    inv.add_argument("open")
+    inv.add_argument("customers")
+    inv.add_argument("--income-account", help="account number for invoice lines (default: Website Hosting)")
+    inv.add_argument("--active-since", default="2024-01-01",
+                     help="customers invoiced or paying since this are active (default 2024-01-01)")
+    inv.add_argument("--replace", action="store_true", help="replace previously imported QBO invoices")
+    inv.add_argument("--apply", action="store_true", help="write it; without this, only preview")
+    inv.set_defaults(func=cmd_import_qbo_invoices)
     args = parser.parse_args()
     return args.func(args)
 

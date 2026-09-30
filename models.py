@@ -52,6 +52,11 @@ class Settings(Base):
     owner_password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
     # A credential_ref, never the TOTP secret itself (docs/CREDENTIALS.md section 4).
     totp_secret_ref: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    invoice_prefix: Mapped[str] = mapped_column(String(10), nullable=False, default="")
+    next_invoice_seq: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    zelle_recipient: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    zelle_display_name: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    default_income_account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id"), nullable=True)
 
 
 class Account(Base):
@@ -231,6 +236,64 @@ class Attachment(Base):
     content_type: Mapped[str] = mapped_column(String(100), nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
     uploaded_at: Mapped[datetime] = mapped_column(utc_timestamp(), nullable=False)
+
+
+INVOICE_STATUSES = ("DRAFT", "OPEN", "PAID", "VOID")
+
+
+class Invoice(Base):
+    __tablename__ = "invoice"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    number: Mapped[str] = mapped_column(String(20), nullable=False, unique=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("payee.id"), nullable=False)
+    issue_date: Mapped[date] = mapped_column(Date, nullable=False)
+    due_date: Mapped[date] = mapped_column(Date, nullable=False)
+    terms: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    status: Mapped[str] = mapped_column(Enum(*INVOICE_STATUSES), nullable=False, default="DRAFT")
+    total: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    amount_paid: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=0)
+    paid_on: Mapped[date | None] = mapped_column(Date, nullable=True)
+    memo: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(Enum("LEDGER", "QBO"), nullable=False, default="LEDGER")
+    entry_id: Mapped[int | None] = mapped_column(ForeignKey("journal_entry.id"), nullable=True)
+    pdf_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    email_requested_at: Mapped[datetime | None] = mapped_column(utc_timestamp(), nullable=True)
+    emailed_at: Mapped[datetime | None] = mapped_column(utc_timestamp(), nullable=True)
+
+    lines: Mapped[list["InvoiceLine"]] = relationship(order_by="InvoiceLine.line_no", lazy="selectin")
+    payments: Mapped[list["InvoicePayment"]] = relationship(order_by="InvoicePayment.paid_on", lazy="selectin")
+
+    @property
+    def balance(self) -> Decimal:
+        return self.total - self.amount_paid
+
+
+class InvoiceLine(Base):
+    __tablename__ = "invoice_line"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("invoice.id"), nullable=False)
+    line_no: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    description: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False, default=1)
+    rate: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    income_account_id: Mapped[int] = mapped_column(ForeignKey("account.id"), nullable=False)
+
+
+class InvoicePayment(Base):
+    """Links a receipt to the invoice it pays. QBO_DERIVED rows are history allocated
+    oldest-first from QuickBooks' payment list, with no entry here."""
+
+    __tablename__ = "invoice_payment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    invoice_id: Mapped[int] = mapped_column(ForeignKey("invoice.id"), nullable=False)
+    entry_id: Mapped[int | None] = mapped_column(ForeignKey("journal_entry.id"), nullable=True)
+    paid_on: Mapped[date] = mapped_column(Date, nullable=False)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    source: Mapped[str] = mapped_column(Enum("LEDGER", "QBO_DERIVED"), nullable=False, default="LEDGER")
 
 
 class AuditLog(Base):

@@ -1,0 +1,67 @@
+<!--
+General Ledger v0.5.0
+File: templates/customers.html
+Description: Invoices -> Customers. Customers with their invoices and open balance.
+             Customers are payees marked as customers (Setup -> Payees edits them).
+-->
+{% extends "base.html" %}
+{% set active_nav = 'invoices' %}
+{% set active_sub = 'customers' %}
+
+{% block page_title %}Customers{% endblock %}
+{% block page_subtitle %}Who you invoice, and what each owes.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <div class="section-actions">
+            <label class="toggle-label"><input type="checkbox" id="showAll" onchange="render()"> Include customers never invoiced</label>
+        </div>
+        <div class="section-actions"><span class="status-line" id="custStatus"></span></div>
+    </div>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr><th>Customer</th><th>Email</th><th class="num">Invoices</th><th>Last invoice</th><th class="num">Open balance</th><th></th></tr></thead>
+            <tbody id="custBody"><tr><td colspan="6" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+    <p class="note">A customer is a payee marked as a customer; edit names, emails and addresses under Setup -> Payees.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    let customers = [];
+
+    function render() {
+        const showAll = document.getElementById('showAll').checked;
+        const rows = customers.filter((c) => showAll || c.invoices);
+        const body = document.getElementById('custBody');
+        if (!rows.length) { tableMessage(body, 6, 'No customers yet.'); return; }
+        body.innerHTML = rows.map((c) => `<tr class="${c.is_active ? '' : 'inactive'}">
+            <td><strong>${escapeHtml(c.name)}</strong>${c.is_active ? '' : ' <span class="chip">ARCHIVED</span>'}</td>
+            <td>${c.email === null ? '—' : escapeHtml(c.email)}</td>
+            <td class="num">${c.invoices}</td>
+            <td>${c.last_invoice === null ? '—' : escapeHtml(c.last_invoice)}</td>
+            <td class="num">${Number(c.open_balance) ? formatMoney(c.open_balance) : ''}</td>
+            <td>${c.invoices ? `<a class="btn small secondary" href="/invoices?customer=${c.id}">Invoices</a>` : ''}</td>
+        </tr>`).join('');
+    }
+
+    async function load() {
+        const status = document.getElementById('custStatus');
+        try {
+            customers = (await api('/api/customers')).customers;
+            render();
+            status.textContent = `${customers.filter((c) => c.invoices).length} invoiced customer(s)`;
+        } catch (e) {
+            status.textContent = `Load failed: ${e.message}`;
+            tableMessage(document.getElementById('custBody'), 6, e.message, true);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}
+
+<!-- EOF - customers.html -->

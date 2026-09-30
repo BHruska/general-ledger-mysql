@@ -1,0 +1,118 @@
+<!--
+General Ledger v0.5.0
+File: templates/invoices.html
+Description: Invoices -> Invoices. Every invoice, QuickBooks history included, filtered by
+             status or customer. Figures come from the server; the page formats them.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'invoices' %}
+{% set active_sub = 'invoices' %}
+
+{% block page_title %}Invoices{% endblock %}
+{% block page_subtitle %}Invoices to customers, and what is still owed.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="stat-grid">
+        <div class="stat-card"><div class="value" id="sOpen">-</div><div class="label">Open invoices</div></div>
+        <div class="stat-card"><div class="value" id="sOwed">-</div><div class="label">Owed to you</div></div>
+        <div class="stat-card"><div class="value" id="sOverdue">-</div><div class="label">Overdue</div></div>
+        <div class="stat-card"><div class="value" id="sAll">-</div><div class="label">All invoices</div></div>
+    </div>
+</div>
+
+<div class="section">
+    <div class="section-header">
+        <div class="section-actions">
+            <div class="segmented" id="statusFilter">
+                <button data-status="" class="active" onclick="setStatus('')">All</button>
+                <button data-status="OPEN" onclick="setStatus('OPEN')">Open</button>
+                <button data-status="PAID" onclick="setStatus('PAID')">Paid</button>
+                <button data-status="DRAFT" onclick="setStatus('DRAFT')">Draft</button>
+                <button data-status="VOID" onclick="setStatus('VOID')">Void</button>
+            </div>
+            <select id="customerFilter" onchange="load()"><option value="">All customers</option></select>
+        </div>
+        <div class="section-actions"><span class="status-line" id="invStatus"></span></div>
+    </div>
+    <div class="table-scroll">
+        <table class="compact">
+            <thead><tr>
+                <th>Number</th><th>Date</th><th>Customer</th><th>Due</th>
+                <th class="num">Total</th><th class="num">Balance</th><th>Status</th><th>Paid on</th>
+            </tr></thead>
+            <tbody id="invBody"><tr><td colspan="8" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+    <p class="note">Invoices marked <em>QuickBooks</em> are history: they were recorded in QuickBooks and never
+        post here. Their paid-on dates come from applying each customer's payments to the oldest invoices first.</p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const CHIP = { OPEN: 'info', PAID: 'success', DRAFT: '', VOID: '' };
+    let status = new URLSearchParams(window.location.search).get('status') || '';
+
+    function setStatus(s) {
+        status = s;
+        document.querySelectorAll('#statusFilter button').forEach((b) => b.classList.toggle('active', b.dataset.status === s));
+        load();
+    }
+
+    async function load() {
+        const body = document.getElementById('invBody');
+        const line = document.getElementById('invStatus');
+        line.textContent = 'Loading...';
+        try {
+            const params = new URLSearchParams();
+            if (status) params.set('status', status);
+            const cust = document.getElementById('customerFilter').value;
+            if (cust) params.set('customer_id', cust);
+            const data = await api('/api/invoices?' + params);
+            document.getElementById('sOpen').textContent = data.counts.OPEN;
+            document.getElementById('sOwed').textContent = formatMoney(data.open_total);
+            document.getElementById('sAll').textContent = Object.values(data.counts).reduce((a, b) => a + b, 0);
+            document.getElementById('sOverdue').textContent = data.invoices.filter((i) => i.overdue).length;
+            if (!data.invoices.length) {
+                tableMessage(body, 8, 'No invoices match.');
+            } else {
+                body.innerHTML = data.invoices.map((i) => `<tr>
+                    <td><a href="/invoices/${i.id}"><strong>${escapeHtml(i.number)}</strong></a></td>
+                    <td>${escapeHtml(i.issue_date)}</td>
+                    <td>${escapeHtml(i.customer)}</td>
+                    <td>${escapeHtml(i.due_date)}</td>
+                    <td class="num">${formatMoney(i.total)}</td>
+                    <td class="num">${i.status === 'OPEN' ? formatMoney(i.balance) : ''}</td>
+                    <td><span class="chip ${CHIP[i.status]}">${escapeHtml(i.status)}</span>
+                        ${i.overdue ? '<span class="chip warning">OVERDUE</span>' : ''}
+                        ${i.source === 'QBO' ? '<span class="chip">QuickBooks</span>' : ''}</td>
+                    <td>${i.paid_on === null ? '' : escapeHtml(i.paid_on)}</td>
+                </tr>`).join('');
+            }
+            line.textContent = `${data.invoices.length} invoice(s)`;
+        } catch (e) {
+            line.textContent = `Load failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 8, e.message, true);
+        }
+    }
+
+    async function init() {
+        try {
+            const { customers } = await api('/api/customers');
+            const filter = document.getElementById('customerFilter');
+            filter.innerHTML = '<option value="">All customers</option>' + customers.filter((c) => c.invoices)
+                .map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+            const preset = new URLSearchParams(window.location.search).get('customer');
+            if (preset) filter.value = preset;
+        } catch (e) {
+            showError(e.message);
+        }
+        setStatus(status);
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+</script>
+{% endblock %}
+
+<!-- EOF - invoices.html -->

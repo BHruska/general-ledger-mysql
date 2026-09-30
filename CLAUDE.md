@@ -44,8 +44,12 @@ just date + sequence) and the review queue; the QuickBooks chart and payees are 
 (`manage.py import-qbo-chart`, `import-qbo-payees`); phase 2b: suggestions
 (`utils/suggest.py`: transfer > rule > active payee > history, recomputed from scratch
 after every change), payee rules and "Remember", transfers posted as one entry, "Post
-all suggested". Next: receipt attachments (a small paperclip button); keyboard shortcuts
-are deferred (docs/BACKLOG.md).
+all suggested"; receipts; the type-to-search account picker. Invoicing was moved ahead of
+phase 3 by the owner (2026-09-30): step A is done (tables, `manage.py import-qbo-invoices`
+history with payments matched oldest-first, Invoices / Customers / A/R Aging pages). QuickBooks
+history never posts: its income reaches this ledger once, through the opening balances.
+Next: invoicing step B (create, issue, void, PDF, deposits suggesting the invoice they pay),
+then phase 3. Keyboard shortcuts are deferred (docs/BACKLOG.md).
 Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
 
 Real Chase downloads live in `.bankdata/` (gitignored — real account data, never

@@ -54,21 +54,4 @@ def dashboard_page():
     return render_template("dashboard.html")
 
 
-# Approved nav sections whose pages arrive in later phases (docs/DESIGN.md section 13).
-PLACEHOLDERS = {
-    "invoices": ("Invoices", "Customer invoices, PDF by email, and Zelle payment matching.",
-                 "Phase 5."),
-}
-
-
-@core_bp.route("/invoices")
-def invoices_page():
-    return _placeholder("invoices")
-
-
-def _placeholder(key: str):
-    title, subtitle, arrives = PLACEHOLDERS[key]
-    return render_template("placeholder.html", section=key, placeholder_title=title,
-                           placeholder_subtitle=subtitle, placeholder_arrives=arrives)
-
 """ EOF - core_routes.py """

@@ -70,7 +70,7 @@ TEST_CHART = {
 # Accounts a bank feed can post to.
 TEST_BANK_ACCOUNTS = {"1010", "2010"}
 
-RESET_TABLES = ("attachment", "bank_txn", "payee_rule", "bank_account", "bank_connection", "journal_line",
+RESET_TABLES = ("invoice_payment", "invoice_line", "invoice", "attachment", "bank_txn", "payee_rule", "bank_account", "bank_connection", "journal_line",
                 "journal_entry", "audit_log", "payee", "account")
 
 # The immutability triggers forbid DELETE on these, so they are TRUNCATEd -- which skips
@@ -110,6 +110,8 @@ def chart(migrated_database):
         conn.execute(text(
             "UPDATE settings SET company_name = '', company_address = NULL, owner_password_hash = NULL, "
             "totp_secret_ref = NULL, fiscal_year_start_month = 1, lock_date = NULL, "
+            "invoice_prefix = '', next_invoice_seq = 1, zelle_recipient = NULL, zelle_display_name = NULL, "
+            "default_income_account_id = NULL, "
             "ar_account_id = :ar, retained_earnings_account_id = :re WHERE id = 1"
         ), {"ar": ids["1200"], "re": ids["3900"]})
     yield ids

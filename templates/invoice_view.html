@@ -1,0 +1,99 @@
+<!--
+General Ledger v0.5.0
+File: templates/invoice_view.html
+Description: One invoice: customer, lines, totals and payments.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'invoices' %}
+{% set active_sub = 'invoices' %}
+
+{% block page_title %}Invoice{% endblock %}
+{% block page_subtitle %}Lines, totals and payments.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2 id="invTitle">Invoice</h2>
+        <div class="section-actions">
+            <span id="invChips"></span>
+            <a class="btn secondary" href="/invoices">Back to invoices</a>
+        </div>
+    </div>
+    <div class="grid">
+        <div class="card"><h3>Bill to</h3><div id="billTo" style="white-space: pre-line;">Loading...</div></div>
+        <div class="card"><h3>Dates</h3><div id="dates"></div></div>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Lines</h2>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr><th>Description</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th><th>Income account</th></tr></thead>
+            <tbody id="linesBody"><tr><td colspan="5" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</div>
+
+<div class="section">
+    <h2>Payments</h2>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr><th>Paid on</th><th class="num">Amount</th><th>Recorded</th></tr></thead>
+            <tbody id="payBody"><tr><td colspan="3" class="empty">Loading...</td></tr></tbody>
+        </table>
+    </div>
+    <p class="note" id="payNote" hidden></p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const invoiceId = {{ invoice_id | default(none) | tojson }};
+
+    async function load() {
+        try {
+            const { invoice: i } = await api(`/api/invoices/${invoiceId}`);
+            document.title = document.title.replace('Invoice', `Invoice ${i.number}`);
+            document.querySelector('.header h1').textContent = `Invoice ${i.number}`;
+            document.getElementById('invTitle').textContent = `${i.number} · ${i.customer}`;
+            document.getElementById('invChips').innerHTML =
+                `<span class="chip ${i.status === 'PAID' ? 'success' : i.status === 'OPEN' ? 'info' : ''}">${escapeHtml(i.status)}</span>`
+                + (i.overdue ? ' <span class="chip warning">OVERDUE</span>' : '')
+                + (i.source === 'QBO' ? ' <span class="chip">From QuickBooks</span>' : '');
+            document.getElementById('billTo').textContent =
+                [i.customer, i.customer_address, i.customer_email].filter((x) => x).join('\n');
+            document.getElementById('dates').innerHTML =
+                `Issued ${escapeHtml(i.issue_date)}<br>Due ${escapeHtml(i.due_date)}${i.terms ? ` (${escapeHtml(i.terms)})` : ''}`
+                + (i.paid_on ? `<br>Paid ${escapeHtml(i.paid_on)}` : '');
+            document.getElementById('linesBody').innerHTML = i.lines.map((l) => `<tr>
+                <td>${escapeHtml(l.description)}</td><td class="num">${escapeHtml(l.quantity)}</td>
+                <td class="num">${formatMoney(l.rate)}</td><td class="num">${formatMoney(l.amount)}</td>
+                <td>${l.income_account === null ? '—' : escapeHtml(l.income_account)}</td></tr>`).join('')
+                + `<tr><td colspan="3"><strong>Total</strong></td><td class="num"><strong>${formatMoney(i.total)}</strong></td><td></td></tr>`
+                + `<tr><td colspan="3">Paid</td><td class="num">${formatMoney(i.amount_paid)}</td><td></td></tr>`
+                + `<tr><td colspan="3"><strong>Balance</strong></td><td class="num"><strong>${formatMoney(i.balance)}</strong></td><td></td></tr>`;
+            const pay = document.getElementById('payBody');
+            if (!i.payments.length) {
+                tableMessage(pay, 3, i.status === 'PAID'
+                    ? 'Paid in QuickBooks; no exported payment could be matched to it.' : 'No payments yet.');
+            } else {
+                pay.innerHTML = i.payments.map((p) => `<tr><td>${escapeHtml(p.paid_on)}</td>
+                    <td class="num">${formatMoney(p.amount)}</td>
+                    <td>${p.derived ? 'QuickBooks (matched oldest-first)' : `entry #${p.entry_id}`}</td></tr>`).join('');
+            }
+            const derived = i.payments.some((p) => p.derived);
+            document.getElementById('payNote').hidden = !derived;
+            document.getElementById('payNote').textContent = 'QuickBooks does not record which invoice a payment paid; '
+                + "these dates come from applying the customer's payments to their oldest invoices first.";
+        } catch (e) {
+            showError(e.message);
+            tableMessage(document.getElementById('linesBody'), 5, e.message, true);
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', load);
+</script>
+{% endblock %}
+
+<!-- EOF - invoice_view.html -->

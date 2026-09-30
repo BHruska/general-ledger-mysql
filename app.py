@@ -15,6 +15,7 @@ from routes.attachment_routes import attachment_bp
 from routes.auth_routes import auth_bp
 from routes.banking_routes import banking_bp
 from routes.core_routes import core_bp
+from routes.invoice_routes import invoice_bp
 from routes.journal_routes import journal_bp
 from routes.reports_routes import reports_bp
 from routes.setup_routes import setup_bp
@@ -51,6 +52,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(core_bp)
 app.register_blueprint(banking_bp)
 app.register_blueprint(attachment_bp)
+app.register_blueprint(invoice_bp)
 app.register_blueprint(journal_bp)
 app.register_blueprint(setup_bp)
 app.register_blueprint(reports_bp)
@@ -75,6 +77,10 @@ SUB_MENUS = {
         {"key": "import", "label": "Import file", "url": "/banking/import"},
         {"key": "connections", "label": "Connections", "url": "/banking/connections"},
     ],
+    "invoices": [
+        {"key": "invoices", "label": "Invoices", "url": "/invoices"},
+        {"key": "customers", "label": "Customers", "url": "/invoices/customers"},
+    ],
     "journal": [
         {"key": "entries", "label": "Entries", "url": "/journal"},
         {"key": "new", "label": "New entry", "url": "/journal/new"},
@@ -84,6 +90,7 @@ SUB_MENUS = {
         {"key": "trial-balance", "label": "Trial Balance", "url": "/reports/trial-balance"},
         {"key": "accounts", "label": "Account List", "url": "/reports/accounts"},
         {"key": "bank-transactions", "label": "Bank Transactions", "url": "/reports/bank-transactions"},
+        {"key": "ar-aging", "label": "A/R Aging", "url": "/reports/ar-aging"},
     ],
     "setup": [
         {"key": "accounts", "label": "Accounts", "url": "/setup/accounts"},
