@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 
 from db import SessionLocal
 from models import Account, BankAccount, BankTxn, JournalEntry, JournalLine, Settings
-from utils import audit
+from utils import attachments, audit
 from utils.errors import LedgerError, NotFound
 from utils.money import ZERO, parse_amount, parse_date, parse_optional_amount, to_str
 
@@ -249,6 +249,7 @@ def post_entry(session, *, entry_date: date, lines: list[LineInput], memo: str |
         for txn in session.scalars(select(BankTxn).where(BankTxn.id.in_(set(bank_txn_ids)))):
             txn.status = "POSTED"
             txn.entry_id = entry.id
+        attachments.carry_to_entry(session, bank_txn_ids, entry.id)
     session.flush()
     session.refresh(entry)
     return entry
@@ -339,9 +340,10 @@ def journal_total(session) -> Decimal:
 
 # ---------------------------------------------------------------- serialisation
 
-def serialize_entry(entry: JournalEntry, accounts: dict[int, Account]) -> dict:
+def serialize_entry(entry: JournalEntry, accounts: dict[int, Account], attachment_count: int = 0) -> dict:
     return {
         "id": entry.id,
+        "attachments": attachment_count,
         "entry_date": entry.entry_date.isoformat(),
         "memo": entry.memo,
         "source": entry.source,
@@ -470,6 +472,7 @@ def list_entries(start: date, end: date) -> list[dict]:
             .order_by(JournalEntry.entry_date.desc(), JournalEntry.id.desc())
         ).all()
         accounts = _accounts_by_id(session)
-        return [serialize_entry(e, accounts) for e in entries]
+        counts = attachments.counts(session, entry_ids=[e.id for e in entries])
+        return [serialize_entry(e, accounts, counts.get(e.id, 0)) for e in entries]
 
 """ EOF - journal.py """

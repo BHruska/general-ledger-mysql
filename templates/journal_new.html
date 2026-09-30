@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.2.0
+General Ledger v0.4.2
 File: templates/journal_new.html
 Description: Journal -> New entry (and Edit, via ?edit=<id>). A lines grid with Debit
              and Credit columns. The server checks the entry on every change and
@@ -69,6 +69,10 @@ Description: Journal -> New entry (and Edit, via ?edit=<id>). A lines grid with 
 </div>
 {% endblock %}
 
+{% block modals %}
+{% include "partials/_account_picker.html" %}
+{% endblock %}
+
 {% block scripts %}
 <script>
     const editId = new URLSearchParams(window.location.search).get('edit');
@@ -93,7 +97,9 @@ Description: Journal -> New entry (and Edit, via ?edit=<id>). A lines grid with 
     function addLine(line) {
         const body = document.getElementById('linesBody');
         body.insertAdjacentHTML('beforeend', lineRow(line));
-        if (line && line.account_id) body.lastElementChild.querySelector('.acct').value = String(line.account_id);
+        const select = body.lastElementChild.querySelector('.acct');
+        if (line && line.account_id) select.value = String(line.account_id);
+        enhanceAccountSelect(select);
     }
 
     function removeLine(button) {

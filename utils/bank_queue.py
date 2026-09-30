@@ -17,7 +17,7 @@ from sqlalchemy import func, select
 
 from db import SessionLocal
 from models import Account, BankAccount, BankTxn, JournalLine, Payee, PayeeRule
-from utils import audit, journal, rules, suggest
+from utils import attachments, audit, journal, rules, suggest
 from utils.errors import LedgerError, NotFound
 from utils.journal import JournalError, LineInput
 from utils.money import ZERO, parse_amount, to_str
@@ -57,6 +57,7 @@ def _serialize(t: BankTxn, ba: BankAccount, ctx: dict) -> dict:
         "excluded_reason": t.excluded_reason,
         "entry_id": t.entry_id,
         "posted_to": ctx["offsets"].get(t.entry_id) if t.entry_id else None,
+        "attachments": ctx["attachments"].get(t.id, 0),
     }
 
 
@@ -97,6 +98,7 @@ def list_lines(view: str = "review", bank_account_id: int | None = None) -> dict
                 Payee.id.in_({t.suggested_payee_id for t, _ in rows if t.suggested_payee_id} or {0}))).all()),
             "rules": {r.id: r for r in session.scalars(select(PayeeRule))},
             "txns": {t.id: t for t in session.scalars(select(BankTxn).where(BankTxn.id.in_(pair_ids or {0})))},
+            "attachments": attachments.counts(session, bank_txn_ids=[t.id for t, _ in rows]),
         }
 
         counts = dict(session.execute(

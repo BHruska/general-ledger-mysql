@@ -1,0 +1,118 @@
+<!--
+General Ledger v0.4.1
+File: templates/partials/_attachments.html
+Description: The receipts dialog behind every paperclip button. Include it once in a
+             page's modals block, then call openAttachments({bank_txn_id | entry_id, title},
+             onChange). Lives in partials/ so the page-title test does not treat it as a page.
+-->
+<div class="modal-overlay" id="attachModal">
+    <div class="modal">
+        <h3 id="attachTitle">Receipts</h3>
+        <div class="table-wrap">
+            <table class="compact">
+                <tbody id="attachBody"><tr><td class="empty">Loading...</td></tr></tbody>
+            </table>
+        </div>
+        <div class="form-group" id="attachDrop" style="margin-top: 15px;">
+            <label for="attachFile">Add a receipt (PDF or image, up to 10 MB)</label>
+            <input type="file" id="attachFile" accept="application/pdf,image/*" onchange="uploadAttachment()">
+            <small>Or drop a file anywhere on this dialog.</small>
+        </div>
+        <div class="alert alert-error" id="attachError" hidden></div>
+        <div class="form-actions">
+            <button class="btn secondary" onclick="closeModal('attachModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let attachTarget = null;
+    let attachOnChange = null;
+
+    function paperclip(count, onclick) {
+        return `<button class="btn small secondary" title="Receipts" onclick="${onclick}">📎${count ? ' ' + count : ''}</button>`;
+    }
+
+    function openAttachments(target, onChange) {
+        attachTarget = target;
+        attachOnChange = onChange || null;
+        document.getElementById('attachTitle').textContent = `Receipts: ${target.title}`;
+        document.getElementById('attachError').hidden = true;
+        document.getElementById('attachFile').value = '';
+        openModal('attachModal');
+        loadAttachments();
+    }
+
+    function attachQuery() {
+        return attachTarget.bank_txn_id ? `bank_txn_id=${attachTarget.bank_txn_id}` : `entry_id=${attachTarget.entry_id}`;
+    }
+
+    async function loadAttachments() {
+        const body = document.getElementById('attachBody');
+        try {
+            const { attachments } = await api('/api/attachments?' + attachQuery());
+            if (!attachments.length) { tableMessage(body, 3, 'No receipts yet.'); return; }
+            body.innerHTML = attachments.map((a) => `<tr>
+                <td><a href="${a.url}" target="_blank" rel="noopener">${escapeHtml(a.filename)}</a></td>
+                <td class="num">${(a.size_bytes / 1024).toFixed(0)} KB</td>
+                <td><button class="btn small danger" onclick="removeAttachment(${a.id}, this)">Remove</button></td>
+            </tr>`).join('');
+        } catch (e) {
+            tableMessage(body, 3, e.message, true);
+        }
+    }
+
+    function readBase64(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result).split(',', 2)[1] ?? '');
+            reader.onerror = () => reject(new Error('The file could not be read.'));
+            reader.readAsDataURL(file);
+        });
+    }
+
+    async function uploadAttachment(file) {
+        file = file || document.getElementById('attachFile').files[0];
+        if (!file) return;
+        const errorEl = document.getElementById('attachError');
+        errorEl.hidden = true;
+        try {
+            const content_base64 = await readBase64(file);
+            await api('/api/attachments', { method: 'POST', body: {
+                bank_txn_id: attachTarget.bank_txn_id ?? null, entry_id: attachTarget.entry_id ?? null,
+                filename: file.name, content_base64,
+            } });
+            document.getElementById('attachFile').value = '';
+            await loadAttachments();
+            if (attachOnChange) attachOnChange();
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+        }
+    }
+
+    async function removeAttachment(id, button) {
+        if (!confirm('Remove this receipt? The removal is recorded in the audit log.')) return;
+        const done = setBusy(button, 'Removing...');
+        try {
+            await api(`/api/attachments/${id}`, { method: 'DELETE' });
+            await loadAttachments();
+            if (attachOnChange) attachOnChange();
+        } catch (e) {
+            document.getElementById('attachError').textContent = e.message;
+            document.getElementById('attachError').hidden = false;
+            done();
+        }
+    }
+
+    (() => {
+        const modal = document.querySelector('#attachModal .modal');
+        modal.addEventListener('dragover', (e) => { e.preventDefault(); });
+        modal.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (e.dataTransfer.files.length) uploadAttachment(e.dataTransfer.files[0]);
+        });
+    })();
+</script>
+
+<!-- EOF - _attachments.html -->

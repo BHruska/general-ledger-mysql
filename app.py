@@ -11,6 +11,7 @@ from flask import Flask
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import config
+from routes.attachment_routes import attachment_bp
 from routes.auth_routes import auth_bp
 from routes.banking_routes import banking_bp
 from routes.core_routes import core_bp
@@ -49,6 +50,7 @@ app.config.update(
 app.register_blueprint(auth_bp)
 app.register_blueprint(core_bp)
 app.register_blueprint(banking_bp)
+app.register_blueprint(attachment_bp)
 app.register_blueprint(journal_bp)
 app.register_blueprint(setup_bp)
 app.register_blueprint(reports_bp)

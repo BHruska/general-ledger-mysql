@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.2.0
+General Ledger v0.4.1
 File: templates/journal_entries.html
 Description: Journal -> Entries. Every entry in a date range with all its lines. Edit
              is reverse-and-repost; Reverse posts a negating entry; only the memo of a
@@ -61,6 +61,8 @@ Description: Journal -> Entries. Every entry in a date range with all its lines.
 {% endblock %}
 
 {% block modals %}
+{% include "partials/_attachments.html" %}
+
 <div class="modal-overlay" id="memoModal">
     <div class="modal">
         <h3 id="memoTitle">Edit memo</h3>
@@ -130,6 +132,7 @@ Description: Journal -> Entries. Every entry in a date range with all its lines.
                 e.editable ? `<a class="btn small secondary" href="/journal/new?edit=${e.id}">Edit</a>` : '',
                 e.reversible ? `<button class="btn small secondary" onclick="reverseEntry(${e.id})">Reverse</button>` : '',
                 `<button class="btn small secondary" onclick="openMemo(${e.id})">Memo</button>`,
+                paperclip(e.attachments, `attachFor(${e.id})`),
             ].join(' ');
             const head = `<tr class="entry-row${reversed ? ' reversed' : ''}">
                 <td>${escapeHtml(e.entry_date)}</td>
@@ -162,6 +165,11 @@ Description: Journal -> Entries. Every entry in a date range with all its lines.
         } catch (e) {
             showError(e.message);
         }
+    }
+
+    function attachFor(id) {
+        const e = entries.find((x) => x.id === id);
+        openAttachments({ entry_id: id, title: `entry #${id}${e.memo ? ' ' + e.memo : ''}` }, loadEntries);
     }
 
     function openMemo(id) {

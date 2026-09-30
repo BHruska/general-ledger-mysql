@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.4.0
+General Ledger v0.4.2
 File: templates/banking_review.html
 Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3). Each
              line arrives with a suggestion (rule, payee, history or transfer) already
@@ -77,6 +77,9 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     </div>
 </div>
 
+{% include "partials/_attachments.html" %}
+{% include "partials/_account_picker.html" %}
+
 <div class="modal-overlay" id="excludeModal">
     <div class="modal">
         <h3 id="excludeTitle">Exclude line</h3>
@@ -148,9 +151,10 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         if (l.suggestion_reason === 'TRANSFER') {
             const o = l.transfer_with;
             return `<tr data-id="${l.id}">${common}
-                <td>Transfer with <strong>${escapeHtml(o.bank_account)}</strong><small>${escapeHtml(o.posted_date)} · ${escapeHtml(o.description)}</small></td>
+                <td class="wrap">Transfer with <strong>${escapeHtml(o.bank_account)}</strong><small>${escapeHtml(o.posted_date)} · ${escapeHtml(o.description)}</small></td>
                 <td class="why">${why(l)}</td>
                 <td><button class="btn small success" onclick="postTransfer(${l.id}, this)">Post transfer</button>
+                    ${paperclip(l.attachments, `attachFor(${l.id})`)}
                     <button class="btn small secondary" onclick="openExclude(${l.id})">Exclude</button></td></tr>`;
         }
         if (l.suggestion_reason === 'RULE_EXCLUDE') {
@@ -158,7 +162,8 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
                 <td>Excluded by rule</td>
                 <td class="why">${why(l)}</td>
                 <td><button class="btn small danger" onclick="acceptExclude(${l.id}, this)">Exclude</button>
-                    <button class="btn small secondary" onclick="openSplit(${l.id})">Post instead</button></td></tr>`;
+                    <button class="btn small secondary" onclick="openSplit(${l.id})">Post instead</button>
+                    ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
         }
         return `<tr data-id="${l.id}">${common}
             <td><select class="post-to" id="postTo${l.id}" onchange="accountChanged(${l.id})">
@@ -170,13 +175,14 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
                 <button class="btn small" onclick="postLine(${l.id}, this)">Post</button>
                 <button class="btn small secondary" onclick="openSplit(${l.id})">Split</button>
                 <button class="btn small secondary" onclick="openExclude(${l.id})">Exclude</button>
+                ${paperclip(l.attachments, `attachFor(${l.id})`)}
             </td></tr>`;
     }
 
     function rowCommon(l) {
         return `<td>${escapeHtml(l.posted_date)}</td>
             <td>${escapeHtml(l.bank_account)}</td>
-            <td class="desc">${escapeHtml(l.description)}${l.provider_category ? `<small>${escapeHtml(l.provider_category)}</small>` : ''}</td>
+            <td class="desc wrap">${escapeHtml(l.description)}${l.provider_category ? `<small>${escapeHtml(l.provider_category)}</small>` : ''}</td>
             <td class="num ${signClass(l.amount)}">${formatMoney(l.amount)}</td>`;
     }
 
@@ -185,11 +191,13 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         const common = rowCommon(l);
         if (view === 'excluded') {
             return `<tr>${common}<td>${escapeHtml(l.excluded_reason ?? '')}</td><td></td>
-                <td><button class="btn small secondary" onclick="restoreLine(${l.id}, this)">Restore</button></td></tr>`;
+                <td><button class="btn small secondary" onclick="restoreLine(${l.id}, this)">Restore</button>
+                ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
         }
         const postedTo = l.posted_to === null ? '—' : l.posted_to.map(escapeHtml).join(', ');
         return `<tr>${common}<td>${postedTo} <small>entry #${l.entry_id}</small></td><td></td>
-            <td><button class="btn small secondary" onclick="unpostLine(${l.id}, this)">Undo</button></td></tr>`;
+            <td><button class="btn small secondary" onclick="unpostLine(${l.id}, this)">Undo</button>
+            ${paperclip(l.attachments, `attachFor(${l.id})`)}</td></tr>`;
     }
 
     // Remember is ticked when the owner picks something other than the suggestion: that
@@ -228,7 +236,9 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
                 body.innerHTML = lines.map(row).join('');
                 lines.forEach((l) => {
                     const sel = document.getElementById(`postTo${l.id}`);
-                    if (sel && l.suggested_account_id !== null) sel.value = String(l.suggested_account_id);
+                    if (!sel) return;
+                    if (l.suggested_account_id !== null) sel.value = String(l.suggested_account_id);
+                    enhanceAccountSelect(sel);
                 });
             }
             status.textContent = `${lines.length} line(s)${data.truncated ? ' (showing the newest 1000)' : ''} · `
@@ -293,6 +303,12 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         }
     }
 
+    // ---------- receipts
+    function attachFor(id) {
+        const l = lines.find((x) => x.id === id);
+        openAttachments({ bank_txn_id: id, title: `${l.posted_date} ${l.description}` }, loadLines);
+    }
+
     // ---------- split
     function splitRow() {
         return `<tr>
@@ -304,7 +320,9 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
     }
 
     function addSplit() {
-        document.getElementById('splitBody').insertAdjacentHTML('beforeend', splitRow());
+        const body = document.getElementById('splitBody');
+        body.insertAdjacentHTML('beforeend', splitRow());
+        enhanceAccountSelect(body.lastElementChild.querySelector('.s-acct'));
         scheduleSplitCheck();
     }
 
@@ -319,6 +337,7 @@ Description: Banking -> Review, the page used most (docs/DESIGN.md section 12.3)
         const sel = document.getElementById(`postTo${id}`);
         const chosen = sel ? sel.value : (activeLine.suggested_account_id ?? '');
         if (chosen) body.querySelector('.s-acct').value = String(chosen);
+        body.querySelectorAll('.s-acct').forEach(enhanceAccountSelect);
         openModal('splitModal');
         scheduleSplitCheck();
     }

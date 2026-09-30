@@ -1,5 +1,5 @@
 <!--
-General Ledger v0.3.3
+General Ledger v0.4.2
 File: templates/setup_payees.html
 Description: Setup -> Payees. Vendors and customers, with the default account a posting
              to them suggests. Archived payees keep their history but stay out of the way.
@@ -63,6 +63,8 @@ Description: Setup -> Payees. Vendors and customers, with the default account a 
 {% endblock %}
 
 {% block modals %}
+{% include "partials/_account_picker.html" %}
+
 <div class="modal-overlay" id="payeeModal">
     <div class="modal">
         <h3 id="payeeTitle">Edit payee</h3>
@@ -152,6 +154,7 @@ Description: Setup -> Payees. Vendors and customers, with the default account a 
         document.getElementById('payeeName').value = p.name;
         document.getElementById('payeeDefault').innerHTML = '<option value="">None</option>' + accountOptions;
         document.getElementById('payeeDefault').value = p.default_account_id === null ? '' : String(p.default_account_id);
+        enhanceAccountSelect(document.getElementById('payeeDefault'));
         document.getElementById('payeeVendor').checked = p.is_vendor;
         document.getElementById('payeeCustomer').checked = p.is_customer;
         document.getElementById('payee1099').checked = p.is_1099_vendor;

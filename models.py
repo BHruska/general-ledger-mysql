@@ -217,6 +217,22 @@ class PayeeRule(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
+class Attachment(Base):
+    """A receipt or document on a bank line and/or the entry that posted it."""
+
+    __tablename__ = "attachment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    entry_id: Mapped[int | None] = mapped_column(ForeignKey("journal_entry.id"), nullable=True)
+    bank_txn_id: Mapped[int | None] = mapped_column(ForeignKey("bank_txn.id"), nullable=True)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(utc_timestamp(), nullable=False)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

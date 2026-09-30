@@ -7,9 +7,10 @@ Flask + MySQL 8.0, deployed to the Photon stack.
 
 **Read first:** `docs/DESIGN.md` (this app), `docs/NEW-APP-INTEGRATION.md` (deployment
 and container contract — binding), `docs/STYLING.md` (UI — binding),
-`docs/CREDENTIALS.md` (secrets — binding), `PLAID_PLAN.md` (the Plaid integration).
+`docs/CREDENTIALS.md` (secrets — binding), `PLAID_PLAN.md` (the Plaid integration),
+`docs/BACKLOG.md` (deferred and later work).
 
-Everything in `docs/` except `DESIGN.md` is a **synced copy** from `_standards/docs/`;
+Everything in `docs/` except `DESIGN.md` and `BACKLOG.md` is a **synced copy** from `_standards/docs/`;
 `docs/.standards-version` records which revision. Do not edit them here — change the
 canonical copy and run `python sync.py push general-ledger` from `_standards/`.
 Project-specific notes go in their own file.
@@ -43,7 +44,8 @@ just date + sequence) and the review queue; the QuickBooks chart and payees are 
 (`manage.py import-qbo-chart`, `import-qbo-payees`); phase 2b: suggestions
 (`utils/suggest.py`: transfer > rule > active payee > history, recomputed from scratch
 after every change), payee rules and "Remember", transfers posted as one entry, "Post
-all suggested". Next: phase 2c, receipt attachments and review-page keyboard shortcuts.
+all suggested". Next: receipt attachments (a small paperclip button); keyboard shortcuts
+are deferred (docs/BACKLOG.md).
 Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
 
 Real Chase downloads live in `.bankdata/` (gitignored — real account data, never

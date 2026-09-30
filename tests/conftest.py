@@ -11,6 +11,7 @@ Description: Tests run against the dev stack's MySQL test database -- never anot
 
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,8 @@ os.environ["GL_CRED_SESSION_SECRET"] = "test-only-session-secret-not-used-anywhe
 # A value from the developer's shell or keyring must not leak into the tests.
 os.environ["SECRETS_DIR"] = str(ROOT / "tests" / ".no-secrets")
 os.environ.pop("APP_HTTPS", None)
+# Attachments are written under /data in the container; tests get a throwaway directory.
+os.environ["APP_HOME"] = tempfile.mkdtemp(prefix="gl-test-data-")
 
 from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
@@ -69,7 +72,7 @@ TEST_BANK_ACCOUNTS = {"1010", "2010"}
 
 # TRUNCATE skips the DELETE triggers that forbid removing posted lines, which is the
 # only reason the suite can reset them at all. Foreign-key checks are off meanwhile.
-RESET_TABLES = ("bank_txn", "payee_rule", "bank_account", "bank_connection", "journal_line",
+RESET_TABLES = ("attachment", "bank_txn", "payee_rule", "bank_account", "bank_connection", "journal_line",
                 "journal_entry", "audit_log", "payee", "account")
 
 

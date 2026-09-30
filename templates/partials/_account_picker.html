@@ -1,0 +1,125 @@
+<!--
+General Ledger v0.4.2
+File: templates/partials/_account_picker.html
+Description: Type-to-search account picker. enhanceAccountSelect(select) hides a <select>
+             and puts a search box in its place: every word typed must appear in the
+             account's number or name ("office", "64", "web host"). The <select> stays
+             the source of truth -- choosing sets its value and fires input/change -- so
+             forms, handlers and the server see exactly what they saw before.
+             After setting a select's value in code, call syncPicker(select).
+-->
+<style>
+    input.picker-input { width: 100%; }
+    .picker-list {
+        position: fixed; z-index: 3000; /* above modals (2000) */
+        background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+        box-shadow: 0 8px 24px rgba(0,0,0,0.2); max-height: 280px; overflow-y: auto; font-size: 13px;
+    }
+    .picker-item { padding: 6px 10px; cursor: pointer; white-space: nowrap; }
+    .picker-item.active { background: #d6e6ff; }
+    .picker-empty { padding: 6px 10px; color: var(--text-faint); }
+</style>
+
+<script>
+    function syncPicker(select) {
+        const input = select._pickerInput;
+        if (!input) return;
+        const option = select.selectedOptions[0];
+        input.value = option && option.value !== '' ? option.text : '';
+    }
+
+    function enhanceAccountSelect(select) {
+        if (select._pickerInput) { syncPicker(select); return; }
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'picker-input';
+        input.autocomplete = 'off';
+        input.setAttribute('role', 'combobox');
+        const first = select.options[0];
+        input.placeholder = first && first.value === '' ? first.text.replace('...', '') + ' (type to search)' : 'Type to search';
+        if (select.id) input.setAttribute('aria-label', select.id);
+        select.hidden = true;
+        select.after(input);
+        select._pickerInput = input;
+
+        let list = null;
+        let matches = [];
+        let active = 0;
+
+        const choices = () => [...select.options].filter((o) => o.value !== '');
+
+        function close() {
+            if (list) { list.remove(); list = null; }
+        }
+
+        function place() {
+            const r = input.getBoundingClientRect();
+            list.style.left = `${r.left}px`;
+            list.style.top = `${r.bottom + 2}px`;
+            list.style.minWidth = `${Math.max(r.width, 320)}px`;
+        }
+
+        function render(query) {
+            const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+            matches = choices().filter((o) => words.every((w) => o.text.toLowerCase().includes(w)));
+            active = Math.min(active, Math.max(matches.length - 1, 0));
+            if (!list) {
+                list = document.createElement('div');
+                list.className = 'picker-list';
+                list.setAttribute('role', 'listbox');
+                // mousedown, not click: it lands before the input's blur closes the list.
+                list.addEventListener('mousedown', (e) => {
+                    e.preventDefault();
+                    const item = e.target.closest('.picker-item');
+                    if (item) choose(matches[Number(item.dataset.i)]);
+                });
+                document.body.appendChild(list);
+            }
+            list.innerHTML = matches.length
+                ? matches.map((o, i) => `<div class="picker-item${i === active ? ' active' : ''}" data-i="${i}" role="option">${escapeHtml(o.text)}</div>`).join('')
+                : '<div class="picker-empty">No account matches.</div>';
+            place();
+            const current = list.querySelector('.picker-item.active');
+            if (current) current.scrollIntoView({ block: 'nearest' });
+        }
+
+        function choose(option) {
+            if (!option) return;
+            select.value = option.value;
+            input.value = option.text;
+            close();
+            select.dispatchEvent(new Event('input', { bubbles: true }));
+            select.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+
+        input.addEventListener('focus', () => { active = 0; input.select(); render(''); });
+        input.addEventListener('input', () => { active = 0; render(input.value); });
+        input.addEventListener('keydown', (e) => {
+            if (!list && ['ArrowDown', 'ArrowUp'].includes(e.key)) { render(input.value); return; }
+            if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, matches.length - 1); render(input.value); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0); render(input.value); }
+            else if (e.key === 'Enter') { if (list) { e.preventDefault(); choose(matches[active]); } }
+            else if (e.key === 'Escape') { if (list) { e.stopPropagation(); close(); syncPicker(select); } }
+            else if (e.key === 'Tab' && list && input.value.trim() && matches.length) { choose(matches[active]); }
+        });
+        input.addEventListener('blur', () => {
+            close();
+            // Emptied on purpose: clear the choice. Anything else half-typed: put the
+            // current choice back rather than leave text that means nothing.
+            if (!input.value.trim() && select.value !== '') {
+                select.value = '';
+                select.dispatchEvent(new Event('input', { bubbles: true }));
+                select.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            syncPicker(select);
+        });
+        // The list is fixed-position; if the page or a table scrolls under it, it would
+        // float away from its input, so it closes instead.
+        window.addEventListener('scroll', (e) => { if (list && !list.contains(e.target)) close(); }, true);
+        window.addEventListener('resize', close);
+
+        syncPicker(select);
+    }
+</script>
+
+<!-- EOF - _account_picker.html -->
