@@ -1,0 +1,74 @@
+<!--
+General Ledger v0.1.0
+File: templates/base.html
+Description: Base layout - header, top nav, status area. Every page extends this.
+Child templates set: active_nav, page_title, page_subtitle; optional header_bottom, styles, scripts.
+Two additions to the docs/STYLING.md 12.2 reference: `hide_nav` (the login page has no
+nav to offer), and a Sign out button in .header-bottom whenever someone is signed in.
+header_bottom now supplies only that row's CONTENT (e.g. a sub-menu), not the row itself.
+-->
+{% set active_nav = active_nav | default('') %}
+{% set hide_nav = hide_nav | default(false) %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ APP_TITLE_PREFIX }} - {% block title %}{{ self.page_title() }}{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    {% block styles %}{% endblock %}
+</head>
+<body>
+    <div class="container{% block container_class %}{% endblock %}">
+        <!-- STANDARD HEADER -->
+        <div class="header">
+            <div class="header-top">
+                <div>
+                    <h1>{% block page_title %}{% endblock %}</h1>
+                    <p>{% block page_subtitle %}{% endblock %}</p>
+                </div>
+                {% if not hide_nav %}
+                <nav class="nav-buttons">
+                    {% for item in NAV_ITEMS %}
+                    <a id="nav-{{ item.key }}" href="{{ item.url }}"
+                       class="{{ 'active' if item.key == active_nav else '' }}">{{ item.label }}</a>
+                    {% endfor %}
+                </nav>
+                {% endif %}
+            </div>
+            {% if session.get('owner') %}
+            <div class="header-bottom">
+                <div class="section-actions">
+                    {% block header_bottom %}{% endblock %}
+                    <button class="btn small secondary" id="signOutBtn" onclick="signOut(this)">Sign out</button>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- TRANSIENT STATUS MESSAGES -->
+        <div id="statusMessages"></div>
+
+        {% block content %}{% endblock %}
+    </div>
+
+    {% block modals %}{% endblock %}
+
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+    <script>
+        async function signOut(button) {
+            const done = setBusy(button, 'Signing out...');
+            try {
+                await api('/api/auth/logout', { method: 'POST', body: {} });
+                window.location.href = '/login';
+            } catch (e) {
+                showError(`Sign out failed: ${e.message}`);
+                done();
+            }
+        }
+    </script>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+
+<!-- EOF - base.html -->

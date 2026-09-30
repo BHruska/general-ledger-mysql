@@ -1,0 +1,73 @@
+<!--
+General Ledger v0.1.0
+File: templates/dashboard.html
+Description: Dashboard shell. Phase 0 shows only system status; the hero panel and
+             stat tiles of docs/DESIGN.md section 12.2 arrive with the core ledger.
+-->
+{% extends "base.html" %}
+{% set active_nav = 'dashboard' %}
+
+{% block page_title %}Dashboard{% endblock %}
+{% block page_subtitle %}Double-entry books for the business, fed from Chase.{% endblock %}
+
+{% block content %}
+<div class="section">
+    <div class="section-header">
+        <h2>System</h2>
+        <div class="section-actions">
+            <span class="status-line" id="statusLine"></span>
+            <button class="btn secondary" id="refreshBtn" onclick="loadStatus()">Refresh</button>
+        </div>
+    </div>
+    <div class="info-box">
+        Phase 0: the skeleton. Ledger figures appear here once the chart of accounts and
+        journal exist (phase 1).
+    </div>
+    <div class="table-wrap">
+        <table class="compact">
+            <thead><tr><th>Check</th><th>Result</th></tr></thead>
+            <tbody id="statusBody">
+                <tr><td colspan="2" class="empty">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function loadStatus() {
+        const body = document.getElementById('statusBody');
+        const line = document.getElementById('statusLine');
+        const done = setBusy(document.getElementById('refreshBtn'), 'Refreshing...');
+        line.textContent = 'Refreshing...';
+        try {
+            const data = await api('/api/status');
+            const secret = data.session_secret;
+            const secretText = secret.source === null
+                ? '<span class="chip danger">MISSING</span>'
+                : `${escapeHtml(secret.source)} · ${escapeHtml(secret.fingerprint)} `
+                  + (secret.weak ? '<span class="chip warning">PLAINTEXT</span>' : '<span class="chip success">OK</span>');
+            const rows = [
+                ['Version', escapeHtml(data.version)],
+                ['Database', data.database === 'ok'
+                    ? '<span class="chip success">OK</span>'
+                    : '<span class="chip danger">UNREACHABLE</span>'],
+                ['Session signing key', secretText],
+                ['HTTPS cookies', data.https ? 'on' : 'off (dev)'],
+            ];
+            body.innerHTML = rows.map(([k, v]) => `<tr><td><strong>${k}</strong></td><td>${v}</td></tr>`).join('');
+            line.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+        } catch (e) {
+            // A failed refresh leaves the last good rows on screen.
+            line.textContent = `Refresh failed: ${e.message}`;
+            if (body.querySelector('td.empty')) tableMessage(body, 2, e.message, true);
+        } finally {
+            done();
+        }
+    }
+    document.addEventListener('DOMContentLoaded', loadStatus);
+</script>
+{% endblock %}
+
+<!-- EOF - dashboard.html -->

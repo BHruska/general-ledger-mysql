@@ -1,0 +1,18 @@
+# General Ledger v0.1.0
+# Pinned to the same majors as trade-portfolio; all of these ship wheels, so the
+# image needs no compiler.
+Flask==3.0.3
+Werkzeug==3.0.3
+gunicorn==22.0.0
+SQLAlchemy==2.0.31
+alembic==1.13.2
+PyMySQL==1.1.1
+# MySQL 8.0 defaults to caching_sha2_password, and PyMySQL cannot complete that
+# handshake without this. >=44 for Argon2id (utils/keystore.py).
+cryptography==50.0.1
+# The owner password hash (docs/DESIGN.md section 11). A PHC-format Argon2id string,
+# which cryptography's raw KDF does not produce.
+argon2-cffi==23.1.0
+# Optional: the OS keyring tier of docs/CREDENTIALS.md. Absent inside a container,
+# where there is no Secret Service -- the resolver falls through cleanly.
+keyring==25.2.1

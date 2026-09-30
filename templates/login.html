@@ -1,0 +1,61 @@
+<!--
+General Ledger v0.1.0
+File: templates/login.html
+Description: Owner sign-in. The one page reachable without a session (besides /healthz).
+-->
+{% extends "base.html" %}
+{% set hide_nav = true %}
+
+{% block page_title %}Sign In{% endblock %}
+{% block page_subtitle %}The books are behind the owner password.{% endblock %}
+
+{% block styles %}
+<style>
+    /* One field: a full-width card would stretch the input across 1400px. */
+    .login-section { max-width: 420px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="section login-section">
+    <h2>Owner password</h2>
+    <form id="loginForm" onsubmit="event.preventDefault(); signIn();">
+        <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" autocomplete="current-password" autofocus required>
+        </div>
+        <div class="alert alert-error" id="loginError" hidden></div>
+        <div class="form-actions">
+            <button type="submit" class="btn" id="signInBtn">Sign in</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    async function signIn() {
+        const errorEl = document.getElementById('loginError');
+        const done = setBusy(document.getElementById('signInBtn'), 'Signing in...');
+        errorEl.hidden = true;
+        try {
+            const next = new URLSearchParams(window.location.search).get('next');
+            // The server validates `next` and returns a same-site path; the page never
+            // redirects anywhere the server did not approve.
+            const url = '/api/auth/login' + (next ? `?next=${encodeURIComponent(next)}` : '');
+            const data = await api(url, {
+                method: 'POST',
+                body: { password: document.getElementById('password').value },
+            });
+            window.location.href = data.next;
+        } catch (e) {
+            errorEl.textContent = e.message;
+            errorEl.hidden = false;
+            document.getElementById('password').select();
+            done();
+        }
+    }
+</script>
+{% endblock %}
+
+<!-- EOF - login.html -->

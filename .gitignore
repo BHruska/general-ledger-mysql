@@ -1,0 +1,13 @@
+# Local dev state and secrets. Production equivalents live in the infra repo
+# (env/general-ledger.env) and under /opt/data/secrets/general-ledger.
+.devdata/
+.devsecrets/
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+# Chrome's crashpad writes this into whatever directory a browser was launched from.
+debug.log

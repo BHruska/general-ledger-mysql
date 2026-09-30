@@ -1,0 +1,20 @@
+# Without this, local secrets and local state are baked into the image.
+.env*
+.devdata/
+.devsecrets/
+.venv/
+.git/
+.gitignore
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.enc
+docs/
+tests/
+scripts/
+compose.dev.yml
+requirements-dev.txt
+CLAUDE.md
+PLAID_PLAN.md
+debug.log

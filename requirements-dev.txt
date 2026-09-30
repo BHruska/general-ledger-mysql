@@ -1,0 +1,4 @@
+# General Ledger v0.1.0
+# Host-side test tooling. Not installed in the image.
+-r requirements.txt
+pytest==8.3.3

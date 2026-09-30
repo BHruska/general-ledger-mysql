@@ -1,0 +1,79 @@
+# compose.dev.yml -- LOCAL DEVELOPMENT ONLY. Production is defined in the
+# photon-docker-infra repo; this file is never used on the server.
+#   python scripts/dev_init.py                      # once, before the first up
+#   docker compose -f compose.dev.yml up --build
+#
+# The filename is deliberate: compose auto-discovery only picks up compose.yaml,
+# compose.yml, docker-compose.yaml and docker-compose.yml, so this can never be
+# started on the server as a second Compose project -- which would get its own
+# network, leaving nginx unable to resolve the service by name.
+#
+# Host ports are 3308 and 8001 so this runs alongside trade-portfolio's dev stack,
+# which holds 3307 and 8000 (docs/DESIGN.md section 0.1).
+name: general-ledger-dev
+
+services:
+  db:
+    # Same tag as production. Do not upgrade independently: a feature that exists
+    # in 8.4 but not 8.0 would pass here and fail on the server.
+    image: mysql:8.0
+    # Matches the setting production needs if the journal_line triggers
+    # (docs/DESIGN.md section 3.2a) are adopted; without it a non-SUPER user cannot
+    # create a trigger while binary logging is on.
+    command: --log-bin-trust-function-creators=1
+    environment:
+      MYSQL_ROOT_PASSWORD: devroot
+      MYSQL_USER: gl
+      MYSQL_PASSWORD: devpass
+      MYSQL_DATABASE: gl
+    volumes:
+      - general-ledger-dev-mysql:/var/lib/mysql
+      - ./docker/dev-initdb:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Loopback only. For tests and a SQL client on the host.
+      - "127.0.0.1:3308:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -p$${MYSQL_ROOT_PASSWORD} || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  general-ledger:
+    build: .
+    env_file:
+      # Layered on purpose: .env.dev is committed and holds the key LIST with
+      # harmless defaults; .env is gitignored and holds anything real, which
+      # overrides it.
+      - path: ./.env.dev
+        required: true
+      - path: ./.env
+        required: false
+    depends_on: { db: { condition: service_healthy } }
+    # Dev only. Production uses `expose: ["8000"]` behind nginx.
+    ports: [ "127.0.0.1:8001:8000" ]
+    volumes:
+      - ./.devdata:/data
+      - ./.devsecrets:/etc/general-ledger:ro
+
+  general-ledger-worker:
+    build: .
+    command: ["worker"]
+    env_file:
+      - path: ./.env.dev
+        required: true
+      - path: ./.env
+        required: false
+    depends_on: { db: { condition: service_healthy } }
+    volumes:
+      - ./.devdata:/data
+      - ./.devsecrets:/etc/general-ledger:ro
+    # A feed sync in flight should finish rather than be killed mid-write.
+    stop_grace_period: 60s
+    # The image's HEALTHCHECK curls :8000, which only the web role serves. Left on,
+    # this container reports unhealthy forever and buries a real failure among the
+    # noise. The infra repo's service block must disable it here too.
+    healthcheck:
+      disable: true
+
+volumes:
+  general-ledger-dev-mysql:

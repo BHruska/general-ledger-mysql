@@ -1,0 +1,7 @@
+# A CRLF entrypoint built on Windows fails in the container with
+# "no such file or directory" for a file that plainly exists.
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.sql       text eol=lf
+.env.dev    text eol=lf
