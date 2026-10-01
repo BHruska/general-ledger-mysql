@@ -210,12 +210,32 @@ def cmd_rebuild_from_qbo(args) -> int:
     return 0
 
 
+def cmd_make_demo(_args) -> int:
+    """Fill an empty database with the demo company (utils/demo.py)."""
+    from sqlalchemy import func, select
+
+    import db
+    from models import JournalEntry
+    from utils import demo
+
+    with db.SessionLocal() as session:
+        if session.scalar(select(func.count()).select_from(JournalEntry)):
+            print("Refused: this database already has entries. make-demo only fills an empty one.",
+                  file=sys.stderr)
+            return 1
+    demo.populate()
+    print("Demo company created. Set a password with: python manage.py set-password")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="General Ledger administration.")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("set-password", help="set or change the owner password").set_defaults(
         func=cmd_set_password
     )
+    sub.add_parser("make-demo", help="fill an empty database with a made-up company's last three months"
+                   ).set_defaults(func=cmd_make_demo)
     qbo = sub.add_parser("import-qbo-chart",
                          help="replace the chart with a QuickBooks Online Account List CSV (empty books only)")
     qbo.add_argument("path", help="the CSV file, or - to read stdin")
