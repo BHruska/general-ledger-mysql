@@ -37,6 +37,7 @@ from models import Account, Invoice, InvoiceLine, InvoicePayment, Payee, Setting
 from utils import audit
 from utils.errors import LedgerError
 from utils.migration.qbo_payees import _account_lookup, _key
+from utils.money import parse_optional_amount
 
 CENT = Decimal("0.01")
 SALES_HEADER = ["", "Transaction date", "Transaction type", "Num", "Customer full name", "Description",
@@ -56,13 +57,22 @@ def _rows(content: str, header: list[str], what: str) -> list[list[str]]:
 
 
 def _money(text: str) -> Decimal | None:
-    text = (text or "").replace(",", "").replace("$", "").strip()
+    """Blank is None. More than two decimal places is refused, never rounded, as
+    everywhere else (utils/money.py)."""
+    return parse_optional_amount(text, "QuickBooks amount")
+
+
+def _quantity(text: str) -> Decimal | None:
+    """Quantities are not money: QuickBooks allows 1.333 hours, and the line's amount
+    comes from the export as is, so rounding the quantity to invoice_line's two places
+    changes no figure in the books."""
+    text = (text or "").replace(",", "").strip()
     if not text:
         return None
     try:
-        return Decimal(text).quantize(CENT)
+        return Decimal(text).quantize(CENT, ROUND_HALF_UP)
     except InvalidOperation:
-        raise LedgerError(f"Not an amount: {text!r}") from None
+        raise LedgerError(f"Not a quantity: {text!r}") from None
 
 
 def _date(text: str) -> date:
@@ -106,7 +116,7 @@ def parse_sales(content: str) -> dict[str, QboInvoice]:
             continue
         number, customer = r[3].strip(), r[4].strip()
         amount = _money(r[8]) or Decimal("0.00")
-        qty = _money(r[6])
+        qty = _quantity(r[6])
         rate = _money(r[7])
         if qty is None:
             qty = Decimal("1.00") if amount else Decimal("0.00")

@@ -73,7 +73,7 @@ conflict with the integration doc's package-style entrypoint.
 | --- | --- |
 | Chart of accounts | five account types, sub-accounts one level deep, a tax-line mapping per account |
 | Journal | double-entry entries, posted and immutable, corrected by reversal |
-| Bank feeds | Chase checking and Chase credit card via Plaid, plus CSV/QFX file import as a fallback |
+| Bank feeds | File import is primary: Chase CSV, plus OFX/QFX/QBO for other banks. An automatic feed (SimpleFIN, or Plaid) is optional and deferred (§5.3) |
 | Review queue | every bank line becomes a journal entry only after it is categorised, matched or excluded |
 | Payee rules | "description contains X → account Y", applied as suggestions, learned from what you post |
 | Transfers | a card payment seen on both feeds is posted once |
@@ -668,10 +668,18 @@ turns out to be more work than it is worth for one business, the connector inter
 | **SimpleFIN Bridge** | $15/year (or $1.50/month) for up to 25 institutions | listed as supported; confirm on their institution search | Simplest: one "setup token" pasted once, then a plain HTTPS GET returns accounts and transactions as JSON |
 | **File import** | $0 | Chase offers per-account activity download as CSV or QFX | Manual: download and upload monthly. Always built, as a fallback and for backfill (§10) |
 
-**Recommendation: build Plaid as primary, but build the file importer first.** The file
-importer is needed regardless — for backfill before the feed start date, for any month
-the feed misses, and as the permanent fallback — and it gives the review queue real
-Chase data to be developed against before any Plaid decision is made.
+~~**Recommendation: build Plaid as primary, but build the file importer first.**~~
+
+**Decision (owner, 2026-10-01): file import is the primary feed; an automatic feed is
+optional and deferred.** A monthly download of two Chase accounts is a few minutes'
+work, and file import is already built. Plaid's costs (production approval, per-Item
+fees after Trial, consent renewals, the OAuth redirect, the web-process exception in
+§2) buy only the removal of that step, and they would weigh on every user if the app is
+ever open-sourced or run as a desktop app (`SQLITE_PLAN.md`), where each user would need
+their own Plaid developer account. If automation is wanted later, **SimpleFIN comes
+first**: each user holds their own token, with no developer approval and no OAuth
+redirect. Plaid stays an optional connector for whoever wants it. `PLAID_PLAN.md` is
+kept, on hold, so that work starts from settled decisions if it is ever picked up.
 
 ### 5.4 Sign normalisation
 
@@ -698,6 +706,16 @@ download before the importer ships (§13); the table is what they are documented
 ### 5.5 File import
 
 - Accepts Chase **CSV** (both the checking and the card layouts) and **QFX/OFX**.
+  *Built: CSV only.* Chase's QFX truncates descriptions and its checking `FITID` is just
+  date + sequence, so Chase stays on CSV. **OFX/QFX/QBO is planned for other banks**
+  (owner, 2026-10-01; one parser, since all three are OFX, 1.x SGML and 2.x XML):
+  - description = `NAME` joined with `MEMO`, since `NAME` is capped at 32 characters;
+  - `FITID` is trusted only where a bank's ids are known to be stable; otherwise the
+    content hash below;
+  - the file's `ACCTID` must match the chosen bank account (last 4), or the import is
+    refused;
+  - the file's `LEDGERBAL` (closing balance and date) is compared with the ledger's
+    balance on that date and shown on the preview.
 - A preview step (wizard, [STYLING.md §5.11](STYLING.md)) shows parsed rows, the date
   range, the count already present, and the sum, before anything is written.
 - `external_id` is the QFX `FITID` when present. For CSV, which has no id, it is
@@ -1059,7 +1077,7 @@ phase 4.
 | **1. Core ledger** | Chart of accounts, `post_entry()` with every §3.1 rule and its tests, reversal, lock date, manual journal entry, account register, trial balance | A working manual ledger |
 | **2. File import + review queue** | Chase CSV/QFX import, `bank_txn`, review queue, rules, transfers, splits, attachments | Already replaces QBO's bank feed, with a monthly download |
 | **3. Reports + migration** | P&L, balance sheet, GL detail, tax summary, CSV export, QuickBooks opening-balance import | **QBO can be cancelled here** |
-| **4. Plaid** (or SimpleFIN) | Connector, Link + OAuth redirect, sync worker, balances, reconnect | Removes the monthly download |
+| **4. Automatic feed** (optional, deferred 2026-10-01; SimpleFIN first, Plaid optional) | Connector, sync worker, balances, reconnect | Removes the monthly download |
 | **5. Invoicing** | Invoices, PDF, SMTP, Zelle matching, A/R aging | Full replacement |
 | **6. Polish** | Reconciliation page, 1099 report, cash-basis P&L, integrity check, keyboard shortcuts | — |
 

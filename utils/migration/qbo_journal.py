@@ -22,7 +22,7 @@ import io
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 
 from sqlalchemy import func, select
 
@@ -30,6 +30,7 @@ from db import SessionLocal
 from models import Account, Invoice, JournalEntry, JournalLine, Payee, Settings
 from utils import audit
 from utils.errors import LedgerError
+from utils.money import parse_amount
 from utils.migration.qbo_chart import GENERAL_SUFFIX
 from utils.migration.qbo_payees import _key
 
@@ -44,13 +45,11 @@ DELETED_KINDS = [("mastercard", "LIABILITY", 2100), ("visa", "LIABILITY", 2100),
 
 
 def _money(text: str) -> Decimal:
-    text = (text or "").replace(",", "").replace("$", "").strip()
-    if not text:
+    """A blank Debit or Credit cell is 0.00. More than two decimal places is refused,
+    never rounded, as everywhere else (utils/money.py)."""
+    if not (text or "").strip():
         return Decimal("0.00")
-    try:
-        return Decimal(text).quantize(Decimal("0.01"))
-    except InvalidOperation:
-        raise LedgerError(f"Not an amount: {text!r}") from None
+    return parse_amount(text, "QuickBooks amount")
 
 
 @dataclass

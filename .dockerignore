@@ -16,5 +16,4 @@ scripts/
 compose.dev.yml
 requirements-dev.txt
 CLAUDE.md
-PLAID_PLAN.md
 debug.log

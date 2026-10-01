@@ -80,6 +80,11 @@ def test_unbalanced_transaction_refused():
                                           ",03/05/2025,Expense,,Acme Hosting,,Card,,48.00"))
 
 
+def test_amount_with_more_than_two_places_refused_not_rounded():
+    with pytest.raises(LedgerError, match="more than two decimal places"):
+        qbo_journal.parse(JOURNAL.replace("Software:Hosting,49.00,", "Software:Hosting,49.004,"))
+
+
 def test_preview_resolves_accounts_and_honours_the_boundary(with_general):
     s = qbo_journal.preview(JOURNAL, BEFORE)
     assert (s["transactions"], s["lines"], s["skipped_on_or_after_boundary"], s["skipped_all_zero"]) == (4, 8, 1, 1)

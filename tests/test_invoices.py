@@ -126,6 +126,13 @@ def test_blank_quantity_and_zero_invoice_lines(chart):
     assert zero.total == 0 and zero.status == "PAID"
 
 
+def test_quantity_is_rounded_but_an_amount_with_three_places_is_refused():
+    lines = qbo_invoices.parse_sales(SALES.replace("12.00,75.00,900.00", "12.333,75.00,900.00"))["5003"].lines
+    assert lines[0].quantity == Decimal("12.33") and lines[0].amount == Decimal("900.00")
+    with pytest.raises(LedgerError, match="more than two decimal places"):
+        qbo_invoices.parse_sales(SALES.replace("12.00,75.00,900.00", "12.00,75.00,900.004"))
+
+
 def test_existing_payee_is_reused_and_second_run_refused(chart):
     with db.SessionLocal.begin() as session:
         session.add(Payee(name="acme corp", is_vendor=True, is_customer=False, is_active=False))

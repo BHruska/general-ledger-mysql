@@ -1,10 +1,14 @@
 # Plaid Plan
 
+**On hold (owner, 2026-10-01).** File import is the primary feed; an automatic feed is
+optional and deferred, with SimpleFIN ahead of Plaid. See DESIGN.md §5.3. This plan
+is kept so the work starts from settled decisions if it is ever picked up.
+
 ## Goal
 
 Import bank transactions into our general ledger (workflow_id: wf_a0ca28df5fdf34b1).
 Chase checking and the Chase Ink card feed the review queue described in
-[docs/DESIGN.md §5–6](docs/DESIGN.md). Plaid work is **phase 4** of the design's build
+[DESIGN.md §5–6](DESIGN.md). Plaid work is **phase 4** of the design's build
 order (§13). This plan is written ahead of time so phase 4 starts from settled decisions.
 
 ## Scope

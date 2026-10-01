@@ -7,13 +7,15 @@ Flask + MySQL 8.0, deployed to the Photon stack.
 
 **Read first:** `docs/DESIGN.md` (this app), `docs/NEW-APP-INTEGRATION.md` (deployment
 and container contract — binding), `docs/STYLING.md` (UI — binding),
-`docs/CREDENTIALS.md` (secrets — binding), `PLAID_PLAN.md` (the Plaid integration),
-`docs/BACKLOG.md` (deferred and later work).
+`docs/CREDENTIALS.md` (secrets — binding), `docs/PLAID_PLAN.md` (the Plaid integration,
+on hold), `docs/SQLITE_PLAN.md` (SQLite + desktop app, draft), `docs/BACKLOG.md`
+(deferred and later work).
 
-Everything in `docs/` except `DESIGN.md` and `BACKLOG.md` is a **synced copy** from `_standards/docs/`;
+Everything in `docs/` except `DESIGN.md`, `BACKLOG.md`, `PLAID_PLAN.md` and
+`SQLITE_PLAN.md` is a **synced copy** from `_standards/docs/`;
 `docs/.standards-version` records which revision. Do not edit them here — change the
 canonical copy and run `python sync.py push general-ledger` from `_standards/`.
-Project-specific notes go in their own file.
+Project-specific notes go in their own file. All Markdown except this file lives in `docs/`.
 
 ## Names
 
@@ -64,7 +66,9 @@ line within five days is suggested IN_HISTORY (exclude) -- QuickBooks and Chase 
 charge differently around the boundary. Posted
 entries are immutable, so a re-run is a rebuild, never an update. The Schedule C tax summary,
 invoice email and keyboard shortcuts are deferred (docs/BACKLOG.md).
-Plaid is phase 4 and its decisions are already settled in `PLAID_PLAN.md`.
+An automatic bank feed (phase 4) is optional and deferred (owner, 2026-10-01): file import
+is primary, OFX/QFX/QBO for non-Chase banks is planned, and SimpleFIN comes ahead of Plaid.
+`docs/PLAID_PLAN.md` is on hold.
 
 Real Chase downloads live in `.bankdata/` (gitignored — real account data, never
 committed). Tests use the synthetic look-alikes in `tests/fixtures/`.
@@ -99,9 +103,9 @@ TRIGGERS from that migration; nothing else depends on them.
 - The integrity check reports; it never repairs.
 - Migrations run from the entrypoint, once, serialized by `GET_LOCK('general-ledger-migrate')`.
 - The worker holds `GET_LOCK('general-ledger-worker')` and stops if it loses it.
-- No inbound webhooks; the feed is polled daily (decision recorded in `PLAID_PLAN.md`).
+- No inbound webhooks; the feed is polled daily (decision recorded in `docs/PLAID_PLAN.md`).
 
-## Plaid (see PLAID_PLAN.md)
+## Plaid (see docs/PLAID_PLAN.md)
 
 This integration is maintained with the Plaid MCP. Consult its build guidance before
 changing any Plaid-touching code, and re-run its acceptance check before reporting such
